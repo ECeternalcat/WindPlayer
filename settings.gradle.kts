@@ -1,0 +1,26 @@
+rootProject.name = "WindPlayer"
+
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+plugins {
+    id("org.gradle.toolchains.foojay-resolver-convention") version "0.10.0"
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+include(":core-mpv")
+include(":core-vfs")
+include(":ui-compose")
+include(":app-desktop")
+include(":app-android")

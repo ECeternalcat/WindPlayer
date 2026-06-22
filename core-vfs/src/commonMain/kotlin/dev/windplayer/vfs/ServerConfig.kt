@@ -1,0 +1,37 @@
+package dev.windplayer.vfs
+
+data class ServerConfig(
+    val id: String,
+    val name: String,
+    val protocol: VfsProtocol,
+    val host: String,
+    val port: Int = 0,
+    val username: String = "",
+    val password: String = "",
+    val basePath: String = "/"
+) {
+    /**
+     * The bare hostname with any `http://` / `https://` scheme prefix stripped.
+     * Users may include the scheme to indicate TLS for WebDAV on non-default ports.
+     */
+    val bareHost: String
+        get() = host.removePrefix("https://").removePrefix("http://").trimEnd('/')
+
+    /**
+     * URL scheme for HTTP-based protocols (WebDAV). Detected from the host prefix;
+     * falls back to the conventional scheme for the default port.
+     */
+    fun httpScheme(): String = when {
+        host.startsWith("https://", ignoreCase = true) -> "https"
+        host.startsWith("http://", ignoreCase = true) -> "http"
+        else -> if (defaultPort() == 443) "https" else "http"
+    }
+
+    fun defaultPort(): Int = when (protocol) {
+        VfsProtocol.SFTP -> if (port > 0) port else 22
+        VfsProtocol.WEBDAV -> if (port > 0) port else if (httpScheme() == "https") 443 else 80
+        VfsProtocol.FTP -> if (port > 0) port else 21
+        VfsProtocol.LOCAL -> 0
+    }
+}
+
