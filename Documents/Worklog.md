@@ -4082,3 +4082,138 @@ git push origin v0.2.0
 - ⏳ Phase 4：自动 changelog（从 commit history 生成）
 - ⏳ Phase 5：覆盖率报告（Jacoco）+ 代码质量（Detekt）
 - ⏳ Phase 6：Fastlane / Play Store 自动发布
+
+---
+
+## 阶段四十六：扩展单元测试 + 发现并修复 ServerConfig 循环依赖 (已完成)
+
+从 9 个测试扩展到 **66 个测试**，覆盖 core-vfs 全部可测逻辑。测试过程中发现并修复了 ServerConfig 的循环依赖 Bug。
+
+### 新增测试文件
+
+| 文件 | 测试数 | 覆盖 |
+|------|--------|------|
+| `commonTest/.../ServerConfigTest.kt` | 19 | bareHost/httpScheme/defaultPort + L10 回归 |
+| `desktopTest/.../VfsUtilsTest.kt` | 25 | formatDuration/formatDurationOsd/formatFileSize/FileNodeComparator/buildUrlWithCredentials |
+| `desktopTest/.../CryptoUtilTest.kt` | 13 | DPAPI round-trip + prefix routing + legacy compat |
+| `commonTest/.../TrackMatcherTest.kt`（已有） | 9 | TrackMatcher 4 级匹配 + FileNode helpers |
+
+**总计：66 个测试，0 失败。**
+
+### 发现的 Bug：ServerConfig 循环依赖（L10 回归）
+
+#### 根因
+
+L10 修复（阶段三十三）引入 `httpScheme()` 和 `defaultPort()` 互相调用：
+
+```kotlin
+// 旧代码（有循环依赖）
+fun httpScheme(): String = when {
+    host.startsWith("https://") -> "https"
+    host.startsWith("http://") -> "http"
+    else -> if (defaultPort() == 443) "https" else "http"  // ← 调 defaultPort
+}
+
+fun defaultPort(): Int = when (protocol) {
+    VfsProtocol.WEBDAV -> if (port > 0) port
+                          else if (httpScheme() == "https") 443 else 80  // ← 调 httpScheme
+    ...
+}
+```
+
+当 `host` 无 scheme 前缀 + `port = 0` 时：
+- `httpScheme()` → else 分支 → `defaultPort()` 
+- `defaultPort()` → WEBDAV 分支 → `httpScheme()` 
+- → `StackOverflowError`
+
+#### 为什么生产环境没暴露
+
+实际使用中，用户在 AddServerScreen 总会指定 port（默认填 443/80/22/21）。`port = 0` 只出现在：
+- 单元测试中构造 `ServerConfig(..., port = 0)`
+- 用户手动编辑 servers.properties 把 port 删了
+- 新创建未保存的 ServerConfig
+
+桌面端 `VfsManager.loadConfig()` 读取 `port = 0` 时会触发（如果 host 也没 scheme 前缀），但 streamProxy 的 SFTP 连接不经过 `httpScheme()`（只有 WebDAV 走），所以没踩到。
+
+#### 修复
+
+```kotlin
+fun httpScheme(): String = when {
+    host.startsWith("https://", ignoreCase = true) -> "https"
+    host.startsWith("http://", ignoreCase = true) -> "http"
+    port == 443 -> "https"   // 直接检查 port，不再调用 defaultPort()
+    else -> "http"
+}
+```
+
+消除循环：`httpScheme()` 只读 `host` + `port`，`defaultPort()` 只调 `httpScheme()`（单向）。
+
+### 测试覆盖的关键场景
+
+#### ServerConfig（19 个测试）
+- `bareHost` 剥离 `https://` / `http://` / trailing `/`
+- `httpScheme` 从 host 前缀检测 + 从 port 443 推断 + 默认 http
+- `defaultPort` SFTP(22) / FTP(21) / WebDAV(443/80) / LOCAL(0) + 自定义 port
+- L10 回归：`https://host:8443` → bareHost/httpScheme/defaultPort 三者一致
+- 循环依赖回归：`host=dav.example.com, port=0` 不再 StackOverflow
+
+#### VfsUtils（25 个测试）
+- `formatDuration`：NaN / Infinite / 负数 / 0 / 秒 / 分 / 时 / 大数 / 小数截断
+- `formatDurationOsd`：双值格式 / 混合时长 / NaN 容错
+- `formatFileSize`：0 / 负数 / B / KB / MB / GB / 411 MB Worklog 测试文件
+- `FileNodeComparator`：目录优先 + 字母排序 + 大小写不敏感
+- `buildUrlWithCredentials`：无凭据 / 仅用户名 / 用户名+密码 / URL 编码 / 默认端口省略 / 非默认端口 / 路径剥离
+
+#### CryptoUtil（13 个测试）
+- 通用：空字符串 / `plain:` 前缀 / legacy 无前缀
+- 非 Windows：encrypt 返回 `plain:` / decrypt `dpapi:` 返回空
+- Windows：DPAPI round-trip / 特殊字符 / Unicode / 长密码
+
+### `assumeTrue` 问题
+
+`kotlin.test` 没有 `assumeTrue`（JUnit API）。改用 `if (!condition) return` 模式跳过平台特定测试。缺点是显示为 passed 而非 skipped，但 CI 上可接受。
+
+### 编译验证
+
+```
+./gradlew :core-vfs:desktopTest
+→ BUILD SUCCESSFUL in 27s
+
+CryptoUtilTest[desktop]:  tests=13 failures=0 skipped=0
+ServerConfigTest[desktop]: tests=19 failures=0 skipped=0
+TrackMatcherTest[desktop]: tests= 9 failures=0 skipped=0
+VfsUtilsTest[desktop]:    tests=25 failures=0 skipped=0
+```
+
+### 文件变更
+
+```
+新增：
+  core-vfs/src/commonTest/.../ServerConfigTest.kt
+  core-vfs/src/desktopTest/.../VfsUtilsTest.kt
+  core-vfs/src/desktopTest/.../CryptoUtilTest.kt
+
+修改：
+  core-vfs/src/commonMain/.../ServerConfig.kt     # 修复 httpScheme ↔ defaultPort 循环依赖
+  core-vfs/src/desktopTest/.../CryptoUtilTest.kt  # 用 if-return 替代 assumeTrue
+```
+
+### 测试金字塔现状
+
+```
+              ╔═══════════╗
+              ║ E2E / UI  ║  0（需 Compose Testing 框架）
+              ╚═══════════╝
+            ╔═══════════════╗
+            ║ Integration   ║  0（需 mock mpv/VFS 服务器）
+            ╚═══════════════╝
+        ╔═════════════════════╗
+        ║  Unit Tests (66)    ║  ← 当前覆盖
+        ║  core-vfs logic     ║
+        ╚═════════════════════╝
+```
+
+当前测试全部集中在 core-vfs 的纯逻辑（数据模型 + 工具函数 + 加密 + 匹配算法）。未来可扩展：
+- UI 集成测试（Compose Testing）
+- VFS 协议集成测试（mock SSH/HTTP 服务器）
+- MpvPlayer 单元测试（mock native 调用）

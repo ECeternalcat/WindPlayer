@@ -19,12 +19,16 @@ data class ServerConfig(
 
     /**
      * URL scheme for HTTP-based protocols (WebDAV). Detected from the host prefix;
-     * falls back to the conventional scheme for the default port.
+     * falls back to checking if the port is explicitly 443.
+     *
+     * Note: deliberately does NOT call [defaultPort] — that would create a
+     * circular dependency (`defaultPort` → `httpScheme` → `defaultPort`).
      */
     fun httpScheme(): String = when {
         host.startsWith("https://", ignoreCase = true) -> "https"
         host.startsWith("http://", ignoreCase = true) -> "http"
-        else -> if (defaultPort() == 443) "https" else "http"
+        port == 443 -> "https"
+        else -> "http"
     }
 
     fun defaultPort(): Int = when (protocol) {
