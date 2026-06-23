@@ -5,12 +5,13 @@ name: Release
 #
 # Artifacts produced:
 #   - Android debug APK (unsigned — for sideloading only)
-#   - Desktop distribution ZIP (cross-platform JVM bundle, runs anywhere with JDK 21)
-#   - Desktop .deb (Linux package — built on Linux runner)
+#   - Desktop distribution ZIP (portable JVM bundle via jpackage; runs on
+#     any OS with JDK 21)
 #
 # What's NOT produced here:
 #   - Signed Android release APK: requires a keystore (set up later)
-#   - Desktop .msi: requires Windows runner (can be added as a separate job)
+#   - Desktop .msi / .deb: requires platform-specific tooling (Windows runner
+#     for MSI, dpkg-deb for Deb — can be added as separate jobs)
 #
 # To cut a release locally:
 #   git tag v0.2.0
@@ -42,9 +43,17 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: |
-            platforms;android-36
-            build-tools;36.0.0
+          accept-android-sdk-licenses: true
+
+      - name: Install Android SDK components
+        run: |
+          set -x
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-36" || true
+          sdkmanager "build-tools;36.0.0" || sdkmanager "build-tools;36.0.1" || true
+
+      - name: Create local.properties
+        run: echo "sdk.dir=$ANDROID_HOME" > local.properties
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
@@ -56,21 +65,23 @@ jobs:
       - name: Build Android Debug APK
         run: ./gradlew :app-android:assembleDebug --no-daemon --stacktrace
 
-      # Build the cross-platform JVM distribution (zips a runnable jar + lib deps).
-      # `distZip` is the safest cross-platform target — produces a single .zip
-      # that runs on Win/Linux/Mac with JDK 21. We skip native packaging (MSI/Deb)
-      # here because MSI requires Windows and Deb tooling varies; both can be
-      # added as separate jobs later.
-      - name: Build Desktop distribution ZIP
-        run: ./gradlew :app-desktop:distZip --no-daemon --stacktrace
+      # Build the desktop distribution. We use `createDistributable` which
+      # produces a portable directory with start scripts + all jars — runs on
+      # any OS with JDK 21 installed. We zip it up so it's a single download.
+      # Requires `jpackage` from JDK 17+ (Temurin JDK 21 on CI has it).
+      - name: Build Desktop distribution
+        run: ./gradlew :app-desktop:createDistributable --no-daemon --stacktrace
 
-      - name: Rename artifacts with version
+      - name: Stage release artifacts
         run: |
+          set -e
           mkdir -p artifacts
+          # Android APK
           cp app-android/build/outputs/apk/debug/*.apk \
              "artifacts/WindPlayer-${{ steps.version.version }}-android.apk"
-          cp app-desktop/build/compose/binaries/main/*.zip \
-             "artifacts/WindPlayer-${{ steps.version.version }}-desktop.zip" || true
+          # Desktop portable distribution (zip the app/ directory)
+          cd app-desktop/build/compose/binaries/main
+          zip -r "../../../../../artifacts/WindPlayer-${{ steps.version.version }}-desktop.zip" app
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
