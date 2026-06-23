@@ -29,3 +29,6 @@ run-output.txt
 # Native build artifacts
 *.so.debug
 *.pdb
+
+# Test data (large media files for dev testing)
+test/
