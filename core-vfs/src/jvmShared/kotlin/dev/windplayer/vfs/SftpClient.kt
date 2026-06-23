@@ -1,11 +1,14 @@
 package dev.windplayer.vfs
 
+import java.util.logging.Logger
+
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.sftp.SFTPClient
 import net.schmizz.sshj.sftp.RemoteResourceInfo
-import net.schmizz.sshj.transport.verification.PromiscuousVerifier
+
+private val LOG = Logger.getLogger("dev.windplayer.vfs.SftpClient")
 
 class SftpClient : VfsClient {
 
@@ -20,17 +23,17 @@ class SftpClient : VfsClient {
             disconnect()
             this@SftpClient.config = config
             val client = SSHClient()
-            client.addHostKeyVerifier(PromiscuousVerifier())
+            client.addHostKeyVerifier(KnownHostsManager.verifier)
             client.connect(config.bareHost, config.defaultPort())
             if (config.username.isNotBlank()) {
                 client.authPassword(config.username, config.password)
             }
             sftpClient = client.newSFTPClient()
             sshClient = client
-            println("[SftpClient] connected to ${config.bareHost}:${config.defaultPort()}")
+            LOG.info("connected to ${config.bareHost}:${config.defaultPort()}")
             true
         } catch (e: Exception) {
-            println("[SftpClient] connect failed: ${e.message}")
+            LOG.warning("connect failed: ${e.message}")
             disconnect()
             false
         }
@@ -61,7 +64,7 @@ class SftpClient : VfsClient {
             }.filter { it.name != "." && it.name != ".." }
                 .sortedWith(FileNodeComparator)
         } catch (e: Exception) {
-            println("[SftpClient] listDirectory failed: ${e.message}")
+            LOG.warning("listDirectory failed: ${e.message}")
             emptyList()
         }
     }
@@ -82,7 +85,7 @@ class SftpClient : VfsClient {
     override suspend fun downloadFile(remotePath: String, localPath: String) = withContext(Dispatchers.IO) {
         val sftp = sftpClient ?: throw IllegalStateException("Not connected")
         sftp.get(remotePath, localPath)
-        println("[SftpClient] downloaded $remotePath -> $localPath")
+        LOG.info("downloaded $remotePath -> $localPath")
     }
 
     override fun isConnected(): Boolean {

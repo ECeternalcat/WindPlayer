@@ -64,6 +64,18 @@ fun MobileApp() {
         }
     }
 
+    LaunchedEffect(Unit) {
+        // Force-initialize ServerStore so we know whether encryption is in use.
+        ServerStore.load(context)
+        if (!ServerStore.encryptionActive) {
+            Toast.makeText(
+                context,
+                "Warning: device doesn't support encrypted storage — server passwords stored in plaintext",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
     LaunchedEffect(settings.language) { I18n.current = settings.language }
 
     when {

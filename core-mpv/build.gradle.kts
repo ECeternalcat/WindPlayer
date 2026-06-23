@@ -19,14 +19,6 @@ kotlin {
                 implementation(libs.kotlinx.coroutines.core)
             }
         }
-
-        val mobileMain by creating {
-            dependsOn(commonMain)
-        }
-
-        val androidMain by getting {
-            dependsOn(mobileMain)
-        }
     }
 }
 

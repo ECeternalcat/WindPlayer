@@ -1,14 +1,17 @@
 package dev.windplayer.vfs
 
+import java.util.logging.Logger
+
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.sftp.RemoteFile
 import net.schmizz.sshj.sftp.SFTPClient
-import net.schmizz.sshj.transport.verification.PromiscuousVerifier
 import java.net.InetSocketAddress
 import java.util.UUID
 import java.util.concurrent.Executors
+
+private val LOG = Logger.getLogger("dev.windplayer.vfs.StreamProxy")
 
 class StreamProxy {
 
@@ -20,7 +23,7 @@ class StreamProxy {
         server.createContext("/stream", this::handleRequest)
         server.executor = Executors.newCachedThreadPool()
         server.start()
-        println("[StreamProxy] HTTP proxy started on 127.0.0.1:$port")
+        LOG.info("HTTP proxy started on 127.0.0.1:$port")
     }
 
     @Synchronized
@@ -48,7 +51,7 @@ class StreamProxy {
 
         val method = exchange.requestMethod
         val rangeHeader = exchange.requestHeaders.getFirst("Range")
-        println("[StreamProxy] $method ${exchange.requestURI} Range=$rangeHeader")
+        LOG.info("$method ${exchange.requestURI} Range=$rangeHeader")
 
         try {
             val fileSize = session.open()
@@ -94,10 +97,10 @@ class StreamProxy {
             if (start > 0 || end < fileSize - 1) {
                 exchange.responseHeaders.set("Content-Range", "bytes $start-$end/$fileSize")
                 exchange.sendResponseHeaders(206, contentLength)
-                println("[StreamProxy] 206 bytes $start-$end/$fileSize ($contentLength bytes)")
+                LOG.info("206 bytes $start-$end/$fileSize ($contentLength bytes)")
             } else {
                 exchange.sendResponseHeaders(200, contentLength)
-                println("[StreamProxy] 200 $contentLength bytes")
+                LOG.info("200 $contentLength bytes")
             }
 
             val buf = ByteArray(64 * 1024)
@@ -108,7 +111,7 @@ class StreamProxy {
                 val toRead = minOf(buf.size.toLong(), end - offset + 1).toInt()
                 val n = session.read(offset, buf, toRead)
                 if (n <= 0) {
-                    println("[StreamProxy] read returned $n at offset $offset")
+                    LOG.info("read returned $n at offset $offset")
                     break
                 }
                 out.write(buf, 0, n)
@@ -116,10 +119,10 @@ class StreamProxy {
                 totalSent += n
             }
             out.flush()
-            println("[StreamProxy] sent $totalSent bytes total")
+            LOG.info("sent $totalSent bytes total")
         } catch (_: java.io.IOException) {
         } catch (e: Exception) {
-            println("[StreamProxy] stream error: ${e.message}")
+            LOG.info("stream error: ${e.message}")
         } finally {
             exchange.close()
         }
@@ -146,7 +149,7 @@ class StreamProxy {
         fun open(): Long {
             if (remoteFile != null) return fileSize
             val client = SSHClient()
-            client.addHostKeyVerifier(PromiscuousVerifier())
+            client.addHostKeyVerifier(KnownHostsManager.verifier)
             client.connect(config.bareHost, config.defaultPort())
             client.authPassword(config.username, config.password)
             val sftpClient = client.newSFTPClient()
@@ -155,7 +158,7 @@ class StreamProxy {
             ssh = client
             sftp = sftpClient
             remoteFile = file
-            println("[StreamProxy] opened $filePath ($fileSize bytes)")
+            LOG.info("opened $filePath ($fileSize bytes)")
             return fileSize
         }
 

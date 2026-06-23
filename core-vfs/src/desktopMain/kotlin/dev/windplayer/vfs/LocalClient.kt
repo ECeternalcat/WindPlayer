@@ -1,8 +1,12 @@
 package dev.windplayer.vfs
 
+import java.util.logging.Logger
+
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+
+private val LOG = Logger.getLogger("dev.windplayer.vfs.LocalClient")
 
 class LocalClient : VfsClient {
 
@@ -15,7 +19,7 @@ class LocalClient : VfsClient {
     override suspend fun listDirectory(path: String): List<FileNode> = withContext(Dispatchers.IO) {
         val dir = File(path)
         if (!dir.exists() || !dir.isDirectory) {
-            println("[LocalClient] path does not exist or is not a directory: $path")
+            LOG.info("path does not exist or is not a directory: $path")
             return@withContext emptyList()
         }
         dir.listFiles()?.filter { it.name != "." && it.name != ".." }?.map { file ->

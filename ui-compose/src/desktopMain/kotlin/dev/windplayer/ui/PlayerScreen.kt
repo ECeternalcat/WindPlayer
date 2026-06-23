@@ -17,42 +17,50 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.windplayer.mpv.MpvEvent
+import dev.windplayer.mpv.MpvFormat
 import dev.windplayer.mpv.MpvPlayer
+import dev.windplayer.vfs.PlaybackParams
 import dev.windplayer.vfs.VfsManager
 import dev.windplayer.vfs.formatDuration
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
+/**
+ * Desktop player control bar + side panels (track selection / playlist / cheatsheet).
+ *
+ * Parameter surface intentionally small (8 params): the bulk of the previous
+ * 25 params is now bundled in [PlaybackParams] (the same data class App.kt
+ * already owns), [PlayerCallbacks], and [PlayerFlows].
+ *
+ * The body deconstructs `params` into local vals for clarity and so the
+ * downstream logic (event handlers, polling loops, click handlers) doesn't
+ * have to repeat `params?.xxx ?: default` everywhere.
+ */
 @Composable
 fun PlayerScreen(
     player: MpvPlayer,
-    initialFilePath: String = "",
-    initialSubtitleFiles: List<String> = emptyList(),
-    initialExternalAudioUrls: List<String> = emptyList(),
-    initialMpvOptions: Map<String, String> = emptyMap(),
-    onBack: (() -> Unit)? = null,
-    onTracksToggle: ((Boolean) -> Unit)? = null,
-    onToggleFullscreen: (() -> Unit)? = null,
-    isFullscreen: Boolean = false,
-    osdEvents: SharedFlow<String>? = null,
+    params: PlaybackParams? = null,
+    callbacks: PlayerCallbacks = PlayerCallbacks.NoOp,
+    flows: PlayerFlows = PlayerFlows(),
     vfsManager: VfsManager? = null,
-    playbackServerId: String? = null,
-    playbackDirPath: String? = null,
-    playbackIsLocal: Boolean = false,
-    directoryVideoPaths: List<String> = emptyList(),
-    currentFileIndex: Int = -1,
-    onPlayNextFile: ((filePath: String) -> Unit)? = null,
-    onJumpToFile: ((filePath: String) -> Unit)? = null,
-    onOsdEvent: ((String) -> Unit)? = null,
-    resumePosition: Double = 0.0,
-    filePath: String = "",
-    playlistToggle: SharedFlow<Unit>? = null,
-    cheatsheetToggle: SharedFlow<Unit>? = null,
-    onPositionUpdate: ((filePath: String, position: Double, duration: Double) -> Unit)? = null,
+    isFullscreen: Boolean = false,
+    autoPlayNext: Boolean = false,
     modifier: Modifier = Modifier
 ) {
+    // Deconstruct PlaybackParams into the local names the body uses.
+    val initialFilePath = params?.streamUrl ?: ""
+    val initialSubtitleFiles = params?.subtitleFiles ?: emptyList()
+    val initialExternalAudioUrls = params?.externalAudioUrls ?: emptyList()
+    val initialMpvOptions = params?.mpvOptions ?: emptyMap()
+    val playbackServerId = params?.serverId
+    val playbackDirPath = params?.dirPath
+    val playbackIsLocal = params?.isLocal ?: false
+    val directoryVideoPaths = params?.directoryVideoPaths ?: emptyList()
+    val currentFileIndex = params?.currentFileIndex ?: -1
+    val resumePosition = params?.resumePosition ?: 0.0
+    val filePath = params?.filePath ?: ""
+
     var isPlaying by remember { mutableStateOf(false) }
     var position by remember { mutableStateOf(0.0) }
     var duration by remember { mutableStateOf(0.0) }
@@ -74,62 +82,36 @@ fun PlayerScreen(
     var showCheatsheet by remember { mutableStateOf(false) }
 
     LaunchedEffect(player) {
+        // Register observers for low-frequency properties (L12 finally lets these
+        // actually fire). The high-frequency `time-pos` stays on a 200ms polling
+        // loop below because emitting it as an event ~60 times/sec would flood
+        // the SharedFlow and starve other events.
+        player.observeProperty("pause", MpvFormat.FLAG)
+        player.observeProperty("volume", MpvFormat.INT64)
+        player.observeProperty("mute", MpvFormat.FLAG)
+        player.observeProperty("speed", MpvFormat.DOUBLE)
+        player.observeProperty("duration", MpvFormat.DOUBLE)
+        player.observeProperty("eof-reached", MpvFormat.FLAG)
+
         launch {
+            // Only `time-pos` needs polling (high-frequency, ~frame rate).
+            // Plus a periodic position-report back to the host (every 25 ticks = 5s).
             var posUpdateCounter = 0
             while (true) {
                 delay(200)
                 if (!fileLoaded) continue
                 try {
-                    isPlaying = player.getPropertyString("pause") != "yes"
                     if (!isSeeking) {
                         val pos = player.getPropertyDouble("time-pos")
                         if (pos >= 0) position = pos
                     }
-                    val dur = player.getPropertyDouble("duration")
-                    if (dur > 0) duration = dur
                 } catch (_: Exception) {}
-
-                if (!eofAutoPlayed && duration > 0 && position >= duration - 1.0
-                    && currentFileIndex >= 0 && onPlayNextFile != null
-                    && directoryVideoPaths.isNotEmpty()
-                ) {
-                    try {
-                        if (player.getPropertyString("eof-reached") == "yes") {
-                            eofAutoPlayed = true
-                            val nextIndex = currentFileIndex + 1
-                            if (nextIndex < directoryVideoPaths.size) {
-                                val nextPath = directoryVideoPaths[nextIndex]
-                                val nextName = nextPath.substringAfterLast('/').substringAfterLast('\\')
-                                statusText = "Next: $nextName"
-                                fileLoaded = false
-                                onOsdEvent?.invoke(">> Next: $nextName")
-                                onPlayNextFile.invoke(nextPath)
-                            } else {
-                                statusText = "Playlist complete"
-                                onOsdEvent?.invoke("Playlist complete")
-                            }
-                        }
-                    } catch (_: Exception) {}
-                }
 
                 if (++posUpdateCounter >= 25) {
                     posUpdateCounter = 0
                     val fp = filePath.ifBlank { directoryVideoPaths.getOrNull(currentFileIndex) ?: initialFilePath }
-                    onPositionUpdate?.invoke(fp, position, duration)
+                    callbacks.onPositionUpdate(fp, position, duration)
                 }
-            }
-        }
-        launch {
-            while (true) {
-                delay(1000)
-                if (!fileLoaded) continue
-                try {
-                    if (!isVolumeDragging) {
-                        volume = player.getPropertyLong("volume")
-                        isMuted = player.getPropertyString("mute") == "yes"
-                    }
-                    speed = player.getPropertyDouble("speed")
-                } catch (_: Exception) {}
             }
         }
         launch {
@@ -138,9 +120,15 @@ fun PlayerScreen(
                     is MpvEvent.FileLoaded -> {
                         fileLoaded = true
                         isPlaying = true
+                        // One-shot sync read of the properties observers cover, in
+                        // case mpv's first observer emission missed (it shouldn't,
+                        // but a defensive read here avoids UI appearing stale).
                         try {
                             val dur = player.getPropertyDouble("duration")
                             if (dur > 0) duration = dur
+                            volume = player.getPropertyLong("volume")
+                            isMuted = player.getPropertyString("mute") == "yes"
+                            speed = player.getPropertyDouble("speed")
                         } catch (_: Exception) {}
                         val fileName = player.getPropertyString("filename") ?: "unknown"
                         statusText = fileName
@@ -170,8 +158,8 @@ fun PlayerScreen(
                         } else if (fileLoaded) {
                             isPlaying = false
                             val shouldAutoPlay = (event.reason == 0 || event.reason == 2)
+                                && autoPlayNext
                                 && currentFileIndex >= 0
-                                && onPlayNextFile != null
                                 && directoryVideoPaths.isNotEmpty()
                             if (shouldAutoPlay) {
                                 val nextIndex = currentFileIndex + 1
@@ -180,11 +168,11 @@ fun PlayerScreen(
                                     val nextName = nextPath.substringAfterLast('/').substringAfterLast('\\')
                                     statusText = "Next: $nextName"
                                     fileLoaded = false
-                                    onOsdEvent?.invoke(">> Next: $nextName")
-                                    onPlayNextFile.invoke(nextPath)
+                                    callbacks.onOsdEvent(">> Next: $nextName")
+                                    callbacks.onJumpToFile(nextPath)
                                 } else {
                                     statusText = "Playlist complete"
-                                    onOsdEvent?.invoke("Playlist complete")
+                                    callbacks.onOsdEvent("Playlist complete")
                                 }
                             } else {
                                 statusText = if (event.reason == 0) "Ended" else "Stopped"
@@ -194,37 +182,66 @@ fun PlayerScreen(
                     is MpvEvent.Error -> {
                         statusText = "Error: ${event.message}"
                     }
+                    is MpvEvent.PropertyChange -> handlePropertyChange(
+                        event = event,
+                        // The block below captures these vars by reference;
+                        // pass them via helper params to keep dispatch readable.
+                        setIsPlaying = { isPlaying = it },
+                        setIsMuted = { isMuted = it },
+                        setVolume = { volume = it },
+                        setSpeed = { speed = it },
+                        setDuration = { duration = it },
+                        onEofReached = {
+                            // Triggered once when `eof-reached` flips to true.
+                            if (!eofAutoPlayed && autoPlayNext
+                                && currentFileIndex >= 0
+                                && directoryVideoPaths.isNotEmpty()
+                            ) {
+                                eofAutoPlayed = true
+                                val nextIndex = currentFileIndex + 1
+                                if (nextIndex < directoryVideoPaths.size) {
+                                    val nextPath = directoryVideoPaths[nextIndex]
+                                    val nextName = nextPath.substringAfterLast('/').substringAfterLast('\\')
+                                    statusText = "Next: $nextName"
+                                    fileLoaded = false
+                                    callbacks.onOsdEvent(">> Next: $nextName")
+                                    callbacks.onJumpToFile(nextPath)
+                                } else {
+                                    statusText = "Playlist complete"
+                                    callbacks.onOsdEvent("Playlist complete")
+                                }
+                            }
+                        },
+                        isVolumeDragging = { isVolumeDragging }
+                    )
                     else -> {}
                 }
             }
         }
     }
 
-    LaunchedEffect(osdEvents) {
-        if (osdEvents == null) return@LaunchedEffect
-        osdEvents.collectLatest { text ->
+    LaunchedEffect(flows.osdEvents) {
+        flows.osdEvents?.collectLatest { text ->
             osdText = text
             delay(2000)
             osdText = ""
         }
     }
 
-    LaunchedEffect(playlistToggle) {
-        if (playlistToggle == null) return@LaunchedEffect
-        playlistToggle.collect {
+    LaunchedEffect(flows.playlistToggle) {
+        flows.playlistToggle?.collect {
             if (directoryVideoPaths.isNotEmpty()) {
                 showPlaylist = !showPlaylist
                 showTrackSheet = false
-                onTracksToggle?.invoke(showPlaylist)
+                callbacks.onTracksToggle(showPlaylist)
             }
         }
     }
 
-    LaunchedEffect(cheatsheetToggle) {
-        if (cheatsheetToggle == null) return@LaunchedEffect
-        cheatsheetToggle.collect {
+    LaunchedEffect(flows.cheatsheetToggle) {
+        flows.cheatsheetToggle?.collect {
             showCheatsheet = !showCheatsheet
-            onTracksToggle?.invoke(showCheatsheet || showTrackSheet || showPlaylist)
+            callbacks.onTracksToggle(showCheatsheet || showTrackSheet || showPlaylist)
         }
     }
 
@@ -293,29 +310,27 @@ fun PlayerScreen(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            if (onBack != null) {
-                IconButton(
-                    onClick = {
-                        val fp = filePath.ifBlank { directoryVideoPaths.getOrNull(currentFileIndex) ?: initialFilePath }
-                        onPositionUpdate?.invoke(fp, position, duration)
-                        player.command("stop")
-                        fileLoaded = false
-                        isPlaying = false
-                        position = 0.0
-                        duration = 0.0
-                        statusText = "Ready"
-                        subtitlesAdded = false
-                        onBack()
-                    },
-                    modifier = Modifier.size(32.dp)
-                ) {
-                    Icon(
-                        painter = iconPainter(PhosphorIcons.ARROW_LEFT),
-                        contentDescription = "Back",
-                        tint = Color.White,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
+            IconButton(
+                onClick = {
+                    val fp = filePath.ifBlank { directoryVideoPaths.getOrNull(currentFileIndex) ?: initialFilePath }
+                    callbacks.onPositionUpdate(fp, position, duration)
+                    player.command("stop")
+                    fileLoaded = false
+                    isPlaying = false
+                    position = 0.0
+                    duration = 0.0
+                    statusText = "Ready"
+                    subtitlesAdded = false
+                    callbacks.onBack()
+                },
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    painter = iconPainter(PhosphorIcons.ARROW_LEFT),
+                    contentDescription = "Back",
+                    tint = Color.White,
+                    modifier = Modifier.size(18.dp)
+                )
             }
 
             IconButton(
@@ -339,7 +354,7 @@ fun PlayerScreen(
                     onClick = {
                         showTrackSheet = !showTrackSheet
                         if (showTrackSheet) showPlaylist = false
-                        onTracksToggle?.invoke(showTrackSheet || showPlaylist)
+                        callbacks.onTracksToggle(showTrackSheet || showPlaylist)
                     },
                     modifier = Modifier.size(32.dp)
                 ) {
@@ -357,7 +372,7 @@ fun PlayerScreen(
                     onClick = {
                         showPlaylist = !showPlaylist
                         if (showPlaylist) showTrackSheet = false
-                        onTracksToggle?.invoke(showTrackSheet || showPlaylist)
+                        callbacks.onTracksToggle(showTrackSheet || showPlaylist)
                     },
                     modifier = Modifier.size(32.dp)
                 ) {
@@ -417,7 +432,7 @@ fun PlayerScreen(
             }
 
             IconButton(
-                onClick = { onToggleFullscreen?.invoke() },
+                onClick = { callbacks.onToggleFullscreen() },
                 modifier = Modifier.size(32.dp)
             ) {
                 Icon(
@@ -476,7 +491,7 @@ fun PlayerScreen(
                 player = player,
                 onDismiss = {
                     showTrackSheet = false
-                    onTracksToggle?.invoke(showTrackSheet || showPlaylist)
+                    callbacks.onTracksToggle(showTrackSheet || showPlaylist)
                 },
                 vfsManager = vfsManager,
                 serverId = playbackServerId,
@@ -491,12 +506,12 @@ fun PlayerScreen(
                 currentIndex = currentFileIndex,
                 onJumpToFile = { path ->
                     showPlaylist = false
-                    onTracksToggle?.invoke(false)
-                    onJumpToFile?.invoke(path)
+                    callbacks.onTracksToggle(false)
+                    callbacks.onJumpToFile(path)
                 },
                 onDismiss = {
                     showPlaylist = false
-                    onTracksToggle?.invoke(false)
+                    callbacks.onTracksToggle(false)
                 }
             )
         }
@@ -504,9 +519,43 @@ fun PlayerScreen(
         if (showCheatsheet) {
             CheatsheetOverlay(onDismiss = {
                 showCheatsheet = false
-                onTracksToggle?.invoke(showTrackSheet || showPlaylist)
+                callbacks.onTracksToggle(showTrackSheet || showPlaylist)
             })
         }
+    }
+}
+
+/**
+ * Dispatch a [MpvEvent.PropertyChange] to the appropriate state setter.
+ *
+ * Pulled out of the events-collector block so the dispatch table is readable.
+ * `value` types match what [MpvPlayer.observeProperty] promises for each format:
+ *  - FLAG → Boolean    (true / false)
+ *  - INT64 → Long
+ *  - DOUBLE → Double
+ */
+private fun handlePropertyChange(
+    event: MpvEvent.PropertyChange,
+    setIsPlaying: (Boolean) -> Unit,
+    setIsMuted: (Boolean) -> Unit,
+    setVolume: (Long) -> Unit,
+    setSpeed: (Double) -> Unit,
+    setDuration: (Double) -> Unit,
+    onEofReached: () -> Unit,
+    isVolumeDragging: () -> Boolean
+) {
+    when (event.name) {
+        // pause is FLAG: value=true means "paused", so isPlaying = !paused.
+        "pause" -> setIsPlaying(event.value != true)
+        "mute" -> setIsMuted(event.value == true)
+        "volume" -> {
+            val v = event.value as? Long ?: return
+            // Skip while the user is dragging the volume slider — they own the value.
+            if (!isVolumeDragging()) setVolume(v)
+        }
+        "speed" -> (event.value as? Double)?.let(setSpeed)
+        "duration" -> (event.value as? Double)?.let { if (it > 0) setDuration(it) }
+        "eof-reached" -> if (event.value == true) onEofReached()
     }
 }
 

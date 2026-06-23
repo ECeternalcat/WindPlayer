@@ -1,5 +1,7 @@
 package dev.windplayer.vfs
 
+import java.util.logging.Logger
+
 import io.ktor.client.*
 import io.ktor.client.call.body
 import io.ktor.client.engine.cio.*
@@ -8,11 +10,12 @@ import io.ktor.client.statement.*
 import io.ktor.http.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.w3c.dom.Document
 import org.w3c.dom.Node
 import java.io.ByteArrayInputStream
 import java.io.File
 import javax.xml.parsers.DocumentBuilderFactory
+
+private val LOG = Logger.getLogger("dev.windplayer.vfs.WebdavClient")
 
 class WebdavClient : VfsClient {
 
@@ -31,10 +34,10 @@ class WebdavClient : VfsClient {
             httpClient = HttpClient(CIO) {
                 expectSuccess = false
             }
-            println("[WebdavClient] configured for $baseUrl")
+            LOG.info("configured for $baseUrl")
             true
         } catch (e: Exception) {
-            println("[WebdavClient] connect failed: ${e.message}")
+            LOG.warning("connect failed: ${e.message}")
             false
         }
     }
@@ -70,7 +73,7 @@ class WebdavClient : VfsClient {
             val body = response.bodyAsText()
             parsePropfindResponse(body, path)
         } catch (e: Exception) {
-            println("[WebdavClient] listDirectory failed: ${e.message}")
+            LOG.warning("listDirectory failed: ${e.message}")
             emptyList()
         }
     }
@@ -100,7 +103,7 @@ class WebdavClient : VfsClient {
         }
         val bytes: ByteArray = response.body()
         File(localPath).writeBytes(bytes)
-        println("[WebdavClient] downloaded $remotePath -> $localPath")
+        LOG.info("downloaded $remotePath -> $localPath")
     }
 
     override fun isConnected(): Boolean = httpClient != null
@@ -116,79 +119,74 @@ class WebdavClient : VfsClient {
     }
 
     private fun parsePropfindResponse(xml: String, requestPath: String): List<FileNode> {
-        val results = mutableListOf<FileNode>()
-        try {
-            val factory = DocumentBuilderFactory.newInstance()
-            factory.isNamespaceAware = true
-            val builder = factory.newDocumentBuilder()
-            val doc: Document = builder.parse(ByteArrayInputStream(xml.toByteArray()))
+        val basePathNoSlash = normalizePath(requestPath).trimEnd('/')
+        return try {
+            val factory = DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
+            val doc = factory.newDocumentBuilder().parse(ByteArrayInputStream(xml.toByteArray()))
 
             val responses = doc.getElementsByTagNameNS("DAV:", "response")
-            val basePath = normalizePath(requestPath)
-            val basePathNoSlash = basePath.trimEnd('/')
-
+            val results = mutableListOf<FileNode>()
             for (i in 0 until responses.length) {
-                val responseNode = responses.item(i)
-                var href = ""
-                var displayName = ""
-                var contentLength = 0L
-                var lastModified = 0L
-                var isDir = false
-
-                var child: Node? = responseNode.firstChild
-                while (child != null) {
-                    when {
-                        child.localName == "href" -> href = child.textContent.trim()
-                        child.localName == "propstat" -> {
-                            var propChild: Node? = child.firstChild
-                            while (propChild != null) {
-                                if (propChild.localName == "prop") {
-                                    var p: Node? = propChild.firstChild
-                                    while (p != null) {
-                                        when {
-                                            p.localName == "displayname" -> displayName = p.textContent.trim()
-                                            p.localName == "getcontentlength" -> contentLength = p.textContent.trim().toLongOrNull() ?: 0
-                                            p.localName == "getlastmodified" -> {
-                                                val sdf = java.text.SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss z", java.util.Locale.ENGLISH)
-                                                lastModified = try { sdf.parse(p.textContent.trim())?.time ?: 0 } catch (_: Exception) { 0 }
-                                            }
-                                            p.localName == "resourcetype" -> {
-                                                var rt: Node? = p.firstChild
-                                                while (rt != null) {
-                                                    if (rt.localName == "collection") isDir = true
-                                                    rt = rt.nextSibling
-                                                }
-                                            }
-                                        }
-                                        p = p.nextSibling
-                                    }
-                                }
-                                propChild = propChild.nextSibling
-                            }
-                        }
+                parseResponse(responses.item(i))?.let { node ->
+                    // Skip the entry that echoes the requested directory itself.
+                    if (!node.path.equals(basePathNoSlash, ignoreCase = true)) {
+                        results.add(node)
                     }
-                    child = child.nextSibling
                 }
-
-                val normalizedHref = normalizePath(href).trimEnd('/')
-                if (normalizedHref.equals(basePathNoSlash, ignoreCase = true)) continue
-
-                val name = if (displayName.isNotBlank()) displayName else normalizedHref.substringAfterLast('/')
-                val nodePath = normalizedHref
-
-                results.add(FileNode(
-                    name = name,
-                    path = nodePath,
-                    isDirectory = isDir,
-                    size = contentLength,
-                    lastModified = lastModified,
-                    protocol = VfsProtocol.WEBDAV
-                ))
             }
+            results.sortedWith(FileNodeComparator)
         } catch (e: Exception) {
-            println("[WebdavClient] XML parse failed: ${e.message}")
+            LOG.warning("XML parse failed: ${e.message}")
+            emptyList()
         }
+    }
 
-        return results.sortedWith(FileNodeComparator)
+    /** Parse a single `<D:response>` element into a [FileNode], or null if malformed. */
+    private fun parseResponse(responseNode: Node): FileNode? {
+        val propstat = findChildElement(responseNode, "propstat") ?: return null
+        val prop = findChildElement(propstat, "prop") ?: return null
+
+        val href = findChildElement(responseNode, "href")?.textContent?.trim().orEmpty()
+        val displayName = findChildElement(prop, "displayname")?.textContent?.trim().orEmpty()
+        val contentLength = findChildElement(prop, "getcontentlength")
+            ?.textContent?.trim()?.toLongOrNull() ?: 0L
+        val lastModified = parseHttpDate(findChildElement(prop, "getlastmodified")?.textContent?.trim())
+        val isDir = findChildElement(prop, "resourcetype")
+            ?.let { hasChildElement(it, "collection") } ?: false
+
+        val normalizedHref = normalizePath(href).trimEnd('/')
+        val name = if (displayName.isNotBlank()) displayName else normalizedHref.substringAfterLast('/')
+
+        return FileNode(
+            name = name,
+            path = normalizedHref,
+            isDirectory = isDir,
+            size = contentLength,
+            lastModified = lastModified,
+            protocol = VfsProtocol.WEBDAV
+        )
+    }
+
+    /** First direct child element of [parent] whose `localName` matches, or null. */
+    private fun findChildElement(parent: Node, localName: String): Node? {
+        var child = parent.firstChild
+        while (child != null) {
+            if (child.localName == localName) return child
+            child = child.nextSibling
+        }
+        return null
+    }
+
+    private fun hasChildElement(parent: Node, localName: String): Boolean =
+        findChildElement(parent, localName) != null
+
+    private fun parseHttpDate(dateStr: String?): Long {
+        if (dateStr.isNullOrBlank()) return 0
+        return try {
+            java.text.SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss z", java.util.Locale.ENGLISH)
+                .parse(dateStr)?.time ?: 0
+        } catch (_: Exception) {
+            0
+        }
     }
 }

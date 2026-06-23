@@ -1,5 +1,7 @@
 package dev.windplayer.vfs
 
+import java.util.logging.Logger
+
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -10,6 +12,8 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.util.Properties
 import java.util.UUID
+
+private val LOG = Logger.getLogger("dev.windplayer.vfs.VfsManager")
 
 class VfsManager {
 
@@ -58,7 +62,7 @@ class VfsManager {
         val connected = client.connect(config)
         return if (connected) {
             clients[serverId] = client
-            println("[VfsManager] connected to ${config.name}")
+            LOG.info("connected to ${config.name}")
             Result.success(Unit)
         } else {
             Result.failure(RuntimeException("Failed to connect to ${config.name}"))
@@ -125,7 +129,11 @@ class VfsManager {
             }
 
             val dirPath = videoNode.path.substringBeforeLast('/')
-            val siblings = try { client.listDirectory(dirPath) } catch (_: Exception) { emptyList() }
+            val siblings = try { client.listDirectory(dirPath) }
+                catch (e: Exception) {
+                    LOG.warning("siblings listing failed (no external track matching): ${e.message}")
+                    emptyList()
+                }
             val matched = matchExternalTracks(videoNode, siblings)
 
             val subtitleFiles = mutableListOf<String>()
@@ -138,7 +146,7 @@ class VfsManager {
                         val localPath = downloadSubtitle(client, track.file)
                         if (localPath != null) {
                             subtitleFiles.add(localPath)
-                            println("[VfsManager] matched subtitle: ${track.file.name}")
+                            LOG.info("matched subtitle: ${track.file.name}")
                         }
                     }
                     MatchedTrackType.AUDIO -> {
@@ -150,7 +158,7 @@ class VfsManager {
                         }
                         externalAudioUrls.add(audioUrl)
                         needsDualStream = true
-                        println("[VfsManager] matched audio: ${track.file.name}")
+                        LOG.info("matched audio: ${track.file.name}")
                     }
                 }
             }
@@ -161,7 +169,7 @@ class VfsManager {
                 "demuxer-max-back-bytes" to "100M"
             ) else emptyMap()
 
-            println("[VfsManager] playback stream: $streamUrl (sessions: $sessionIds)")
+            LOG.info("playback stream: $streamUrl (sessions: $sessionIds)")
             Result.success(PlaybackParams(
                 streamUrl = streamUrl,
                 subtitleFiles = subtitleFiles,
@@ -206,7 +214,7 @@ class VfsManager {
             }
             localFile.absolutePath
         } catch (e: Exception) {
-            println("[VfsManager] subtitle download failed: ${e.message}")
+            LOG.warning("subtitle download failed: ${e.message}")
             null
         }
     }
@@ -251,12 +259,13 @@ class VfsManager {
                 props.setProperty("server.$index.host", server.host)
                 props.setProperty("server.$index.port", server.port.toString())
                 props.setProperty("server.$index.username", server.username)
-                props.setProperty("server.$index.password", server.password)
+                // Encrypt password at rest via DPAPI (Windows) / labelled plaintext (other).
+                props.setProperty("server.$index.password", CryptoUtil.encrypt(server.password))
                 props.setProperty("server.$index.basePath", server.basePath)
             }
             FileOutputStream(configFile).use { props.store(it, "WindPlayer Server Configurations") }
         } catch (e: Exception) {
-            println("[VfsManager] saveConfig failed: ${e.message}")
+            LOG.warning("saveConfig failed: ${e.message}")
         }
     }
 
@@ -271,17 +280,22 @@ class VfsManager {
                 val id = props.getProperty("server.$i.id") ?: continue
                 val name = props.getProperty("server.$i.name") ?: continue
                 val protocolName = props.getProperty("server.$i.protocol") ?: continue
-                val protocol = try { VfsProtocol.valueOf(protocolName) } catch (_: Exception) { continue }
+                val protocol = try { VfsProtocol.valueOf(protocolName) }
+                    catch (_: Exception) {
+                        LOG.warning("server $i has unknown protocol '$protocolName', skipping")
+                        continue
+                    }
                 val host = props.getProperty("server.$i.host", "")
                 val port = props.getProperty("server.$i.port", "0").toIntOrNull() ?: 0
                 val username = props.getProperty("server.$i.username", "")
-                val password = props.getProperty("server.$i.password", "")
+                // Decrypt password (transparently handles dpapi:/plain:/legacy plaintext).
+                val password = CryptoUtil.decrypt(props.getProperty("server.$i.password", ""))
                 val basePath = props.getProperty("server.$i.basePath", "/")
                 _servers.add(ServerConfig(id, name, protocol, host, port, username, password, basePath))
             }
-            println("[VfsManager] loaded ${_servers.size} server(s)")
+            LOG.info("loaded ${_servers.size} server(s)")
         } catch (e: Exception) {
-            println("[VfsManager] loadConfig failed: ${e.message}")
+            LOG.warning("loadConfig failed: ${e.message}")
         }
     }
 }

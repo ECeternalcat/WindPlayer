@@ -24,10 +24,54 @@ actual class MpvPlayer actual constructor() {
         override fun eventProperty(property: String, value: Double) { _events.tryEmit(MpvEvent.PropertyChange(property, value)) }
         override fun event(eventId: Int) {
             when (eventId) {
-                MPVLib.MpvEvent.MPV_EVENT_FILE_LOADED -> { fileLoadedBefore = true; _events.tryEmit(MpvEvent.FileLoaded()) }
-                MPVLib.MpvEvent.MPV_EVENT_END_FILE -> { val r = if (fileLoadedBefore) 0 else 4; fileLoadedBefore = false; _events.tryEmit(MpvEvent.EndFile(r)) }
+                MPVLib.MpvEvent.MPV_EVENT_FILE_LOADED -> {
+                    fileLoadedBefore = true
+                    _events.tryEmit(MpvEvent.FileLoaded())
+                }
+                MPVLib.MpvEvent.MPV_EVENT_END_FILE -> {
+                    // libplayer.so's `event(int)` JNI callback does NOT pass the
+                    // mpv_event_end_file.reason field, so we infer it from the
+                    // observable mpv state at the moment END_FILE fires:
+                    //   - eof-reached == yes -> reason 0 (EOF, natural end of file)
+                    //   - otherwise, file was loaded earlier -> reason 2 (STOP,
+                    //     e.g. user pressed back / issued `stop` / loadfile replaced it)
+                    //   - otherwise -> reason 4 (ERROR, file failed to open)
+                    //
+                    // Critical for MobilePlayerScreen auto-play: distinguishing
+                    // STOP from EOF prevents auto-playing the next file when the
+                    // user explicitly pressed back.
+                    val reason = inferEndFileReason(fileLoadedBefore)
+                    fileLoadedBefore = false
+                    _events.tryEmit(MpvEvent.EndFile(reason))
+                }
                 MPVLib.MpvEvent.MPV_EVENT_IDLE -> _events.tryEmit(MpvEvent.Idle())
             }
+        }
+    }
+
+    /**
+     * Infer the mpv end_file reason via the `eof-reached` property, since the
+     * JNI bridge only hands us the bare event id.
+     *
+     * MPV_END_FILE_REASON values (per `lib/mpv-dev/include/mpv/client.h`):
+     *   0 = EOF       — natural end of file
+     *   2 = STOP      — external action (stop command / new loadfile)
+     *   3 = QUIT      — player shutdown
+     *   4 = ERROR     — file failed to load
+     *   5 = REDIRECT  — playlist redirect (treated as EOF for our purposes)
+     */
+    private fun inferEndFileReason(wasLoaded: Boolean): Int {
+        return try {
+            val eof = MPVLib.getPropertyString("eof-reached") == "yes"
+            when {
+                eof -> 0
+                wasLoaded -> 2
+                else -> 4
+            }
+        } catch (_: Exception) {
+            // Property query failed — fall back to the legacy heuristic so the
+            // player still emits EndFile (UI continues to work).
+            if (wasLoaded) 0 else 4
         }
     }
 

@@ -5,48 +5,39 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import dev.windplayer.mpv.MpvPlayer
 import dev.windplayer.vfs.FileNode
 import dev.windplayer.vfs.PlaybackParams
-import dev.windplayer.vfs.VfsManager
 import dev.windplayer.vfs.VfsProtocol
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
 
 enum class AppScreen { BROWSER, PLAYER, SETTINGS }
 
+/**
+ * Top-level desktop composable. Routes between browser / settings / player
+ * screens and orchestrates playback-preparation + playlist jumps.
+ *
+ * Parameter surface intentionally small (5 params): all hoisted state, callbacks
+ * and flows are bundled in [DesktopAppState] / [DesktopAppCallbacks] /
+ * [DesktopAppFlows] respectively.
+ */
 @Composable
 fun App(
-    player: MpvPlayer,
-    vfsManager: VfsManager,
+    state: DesktopAppState,
+    callbacks: DesktopAppCallbacks = DesktopAppCallbacks.NoOp,
+    flows: DesktopAppFlows = DesktopAppFlows(),
     initialFilePath: String = "",
-    onScreenChange: ((AppScreen) -> Unit)? = null,
-    onTracksToggle: ((Boolean) -> Unit)? = null,
-    onToggleFullscreen: (() -> Unit)? = null,
-    isFullscreen: Boolean = false,
-    osdEvents: SharedFlow<String>? = null,
-    onOsdEmit: ((String) -> Unit)? = null,
-    dropFilePath: SharedFlow<String>? = null,
-    playlistToggle: SharedFlow<Unit>? = null,
-    cheatsheetToggle: SharedFlow<Unit>? = null,
-    onSkipNextRegistered: ((() -> Unit) -> Unit)? = null,
-    settings: PlayerSettings = PlayerSettings.DEFAULT,
-    onSettingsChanged: ((PlayerSettings) -> Unit)? = null,
-    recentFiles: List<RecentFile> = emptyList(),
-    onFilePlayed: ((name: String, path: String, isLocal: Boolean, serverId: String?) -> Unit)? = null,
-    onPositionUpdate: ((filePath: String, position: Double, duration: Double) -> Unit)? = null,
-    bookmarks: List<String> = emptyList(),
-    onBookmarkAdded: ((path: String) -> Unit)? = null,
-    onBookmarkRemoved: ((path: String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    val player = state.player
+    val vfsManager = state.vfsManager
+
     var currentScreen by remember { mutableStateOf(AppScreen.BROWSER) }
     var pendingPlayback by remember { mutableStateOf<PlaybackParams?>(null) }
     val scope = rememberCoroutineScope()
 
     fun switchScreen(screen: AppScreen) {
         currentScreen = screen
-        onScreenChange?.invoke(screen)
+        callbacks.onScreenChange(screen)
     }
 
     suspend fun prepareAndPlay(
@@ -92,7 +83,7 @@ fun App(
             if (currentScreen != AppScreen.PLAYER) {
                 switchScreen(AppScreen.PLAYER)
             }
-            onFilePlayed?.invoke(fileName, filePath, isLocal, serverId)
+            callbacks.onFilePlayed(fileName, filePath, isLocal, serverId)
         }
     }
 
@@ -116,9 +107,10 @@ fun App(
     }
 
     val skipNextAction: () -> Unit = {
-        if (pendingPlayback != null && pendingPlayback!!.currentFileIndex >= 0) {
-            val nextIndex = pendingPlayback!!.currentFileIndex + 1
-            val paths = pendingPlayback!!.directoryVideoPaths
+        val current = pendingPlayback
+        if (current != null && current.currentFileIndex >= 0) {
+            val nextIndex = current.currentFileIndex + 1
+            val paths = current.directoryVideoPaths
             if (nextIndex < paths.size) {
                 playNextFile(paths[nextIndex])
             }
@@ -126,12 +118,11 @@ fun App(
     }
 
     SideEffect {
-        onSkipNextRegistered?.invoke(skipNextAction)
+        callbacks.onSkipNextRegistered(skipNextAction)
     }
 
-    LaunchedEffect(dropFilePath) {
-        if (dropFilePath == null) return@LaunchedEffect
-        dropFilePath.collect { path ->
+    LaunchedEffect(flows.dropFilePath) {
+        flows.dropFilePath?.collect { path ->
             prepareAndPlay(path)
         }
     }
@@ -154,10 +145,10 @@ fun App(
                             params.directoryVideoPaths.getOrNull(params.currentFileIndex) ?: params.streamUrl
                         }
                         val replayName = replayPath.substringAfterLast('/').substringAfterLast('\\')
-                        onFilePlayed?.invoke(replayName, replayPath, params.isLocal, params.serverId)
+                        callbacks.onFilePlayed(replayName, replayPath, params.isLocal, params.serverId)
                     },
                     onOpenSettings = { switchScreen(AppScreen.SETTINGS) },
-                    recentFiles = recentFiles,
+                    recentFiles = state.recentFiles,
                     onPlayRecentFile = { recent ->
                         scope.launch {
                             prepareAndPlay(
@@ -168,53 +159,47 @@ fun App(
                             )
                         }
                     },
-                    bookmarks = bookmarks,
-                    onBookmarkAdded = onBookmarkAdded,
-                    onBookmarkRemoved = onBookmarkRemoved,
+                    bookmarks = state.bookmarks,
+                    onBookmarkAdded = callbacks::onBookmarkAdded,
+                    onBookmarkRemoved = callbacks::onBookmarkRemoved,
                     modifier = modifier
                 )
             }
             AppScreen.SETTINGS -> {
                 SettingsScreen(
-                    settings = settings,
-                    onSettingsChanged = { newSettings -> onSettingsChanged?.invoke(newSettings) },
+                    settings = state.settings,
+                    onSettingsChanged = { newSettings -> callbacks.onSettingsChanged(newSettings) },
                     onBack = { switchScreen(AppScreen.BROWSER) },
                     modifier = modifier
                 )
             }
             AppScreen.PLAYER -> {
-                val effectiveDirPaths = pendingPlayback?.directoryVideoPaths ?: emptyList()
-                val effectiveIndex = pendingPlayback?.currentFileIndex ?: -1
                 PlayerScreen(
                     player = player,
-                    initialFilePath = pendingPlayback?.streamUrl ?: initialFilePath,
-                    initialSubtitleFiles = pendingPlayback?.subtitleFiles ?: emptyList(),
-                    initialExternalAudioUrls = pendingPlayback?.externalAudioUrls ?: emptyList(),
-                    initialMpvOptions = pendingPlayback?.mpvOptions ?: emptyMap(),
-                    onBack = {
-                        player.command("stop")
-                        pendingPlayback?.let { vfsManager.releasePlayback(it) }
-                        pendingPlayback = null
-                        switchScreen(AppScreen.BROWSER)
+                    params = pendingPlayback,
+                    callbacks = object : PlayerCallbacks {
+                        override fun onBack() {
+                            player.command("stop")
+                            pendingPlayback?.let { vfsManager.releasePlayback(it) }
+                            pendingPlayback = null
+                            switchScreen(AppScreen.BROWSER)
+                        }
+                        override fun onTracksToggle(expanded: Boolean) =
+                            callbacks.onTracksToggle(expanded)
+                        override fun onToggleFullscreen() = callbacks.onToggleFullscreen()
+                        override fun onJumpToFile(filePath: String) = playNextFile(filePath)
+                        override fun onOsdEvent(text: String) = callbacks.onOsdEmit(text)
+                        override fun onPositionUpdate(filePath: String, position: Double, duration: Double) =
+                            callbacks.onPositionUpdate(filePath, position, duration)
                     },
-                    onTracksToggle = onTracksToggle,
-                    onToggleFullscreen = onToggleFullscreen,
-                    isFullscreen = isFullscreen,
-                    osdEvents = osdEvents,
+                    flows = PlayerFlows(
+                        osdEvents = flows.osdEvents,
+                        playlistToggle = flows.playlistToggle,
+                        cheatsheetToggle = flows.cheatsheetToggle
+                    ),
                     vfsManager = vfsManager,
-                    playbackServerId = pendingPlayback?.serverId,
-                    playbackDirPath = pendingPlayback?.dirPath,
-                    playbackIsLocal = pendingPlayback?.isLocal ?: false,
-                    directoryVideoPaths = effectiveDirPaths,
-                    currentFileIndex = effectiveIndex,
-                    onPlayNextFile = if (settings.autoPlayNext) { filePath -> playNextFile(filePath) } else null,
-                    onJumpToFile = { filePath -> playNextFile(filePath) },
-                    onOsdEvent = onOsdEmit,
-                    resumePosition = pendingPlayback?.resumePosition ?: 0.0,
-                    filePath = pendingPlayback?.filePath ?: pendingPlayback?.streamUrl ?: "",
-                    playlistToggle = playlistToggle,
-                    cheatsheetToggle = cheatsheetToggle,
-                    onPositionUpdate = onPositionUpdate,
+                    isFullscreen = state.isFullscreen,
+                    autoPlayNext = state.settings.autoPlayNext,
                     modifier = modifier
                 )
             }

@@ -369,11 +369,11 @@ fun FileBrowserScreen(
                                         tint = Color(0xFF888888),
                                         modifier = Modifier.size(14.dp)
                                     )
+                                }
+                            }
+                        }
+                    }
                 }
-            }
-        }
-    }
-            }
             }
 
 

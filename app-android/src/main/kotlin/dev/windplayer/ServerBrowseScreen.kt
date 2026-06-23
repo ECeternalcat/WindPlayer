@@ -34,7 +34,19 @@ fun ServerBrowseScreen(
     onNavigate: (String) -> Unit,
     onFilePlay: (FileNode) -> Unit
 ) {
-    BackHandler { onBack() }
+    // Navigate up one directory if we're deeper than basePath; otherwise exit.
+    fun handleBack() {
+        val trimmedCurrent = currentPath.trimEnd('/').removePrefix("/")
+        val trimmedBase = server.basePath.trimEnd('/').removePrefix("/")
+        if (trimmedCurrent == trimmedBase || trimmedCurrent.isEmpty()) {
+            onBack()
+        } else {
+            val parent = "/" + trimmedCurrent.substringBeforeLast('/', "").trimEnd('/')
+            onNavigate(parent.ifBlank { "/" })
+        }
+    }
+
+    BackHandler { handleBack() }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -45,7 +57,7 @@ fun ServerBrowseScreen(
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(onClick = { handleBack() }) {
                         Icon(Icons.Default.ArrowBack, "Back", tint = Color.White)
                     }
                 },

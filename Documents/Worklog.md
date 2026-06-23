@@ -2702,3 +2702,1383 @@ mpv 内部识别 jobject 并调用 `ANativeWindow_fromSurface(env, surface)`。
 - 删除约 **80 行**重复代码（4 个时间格式化函数 × ~7 行 + 5 个 comparator × 1 行 + 3 个 URL builder × ~10 行 + Main.kt 中重复的 ext sets × 7 行）
 - 新增 `VfsUtils.kt` 75 行（带文档注释）
 - 净减少约 5 行，但更重要的是消除了"修一处忘修另一处"的隐患
+
+---
+
+## 阶段三十五：A1 Main.kt 巨石拆分 (已完成)
+
+将原本 1304 行的 `Main.kt` 拆为 7 个职责单一的文件。
+
+### 拆分前后对比
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| ~~Main.kt (1304)~~ → | | |
+| `Main.kt` | 201 | bootstrap / drag-drop / 窗口生命周期 / Compose App |
+| `LayoutManager.kt` | 265 | null-layout 定位 / 全屏 / PiP / 控件自动隐藏 |
+| `DesktopShortcuts.kt` | 284 | 键盘快捷键 + 4 个共享动作 helper |
+| `DesktopContextMenu.kt` | 229 | 右键上下文菜单（Play/FS/PiP/Mute/Sub/Audio/Speed/ABLoop/EQ/...） |
+| `DesktopPersistence.kt` | 196 | window/settings/recent/bookmarks 持久化 |
+| `CanvasMouseController.kt` | 152 | 鼠标分区拖拽 / 点击 / 滚轮 |
+| `Win32Api.kt` | 31 | JNA 接口 + Win32 常量 |
+
+**最大文件从 1304 行 → 284 行**（缩减 78%）。
+
+### 关键设计决策
+
+#### 1. Win32 API 抽离（`Win32Api.kt`）
+- 8 个常量 + 1 个 JNA 接口（GetWindowLongW/SetWindowLongW/SetWindowPos）
+- 全部 `internal` 可见性，避免被其他模块意外依赖
+
+#### 2. 持久化集中（`DesktopPersistence.kt`）
+- 所有 `.properties` 读写集中在同一文件，按"Window state / Settings / Recent / Bookmarks"四节组织
+- 单一 `CONFIG_DIR` (`~/.windplayer/`) + `ensureConfigDir()` 取代 4 处分散的 `dir.mkdirs()`
+- 函数全部 `internal`，对外只暴露 4 类操作
+
+#### 3. `LayoutManager` 独立文件
+- 247 行的核心 Swing 布局类，没有任何外部依赖（除 Win32Api + ComposePanel）
+- 文档注释解释了「不 dispose JFrame」的根本原因（mpv `wid` 绑定会失效）
+
+#### 4. 桌面快捷键 + 共享动作 helper（`DesktopShortcuts.kt`）
+**核心创新**：抽出了 4 个被键盘快捷键和右键菜单**共用**的 helper：
+- `adjustVolume(player, osd, delta)` — 替代 4 处重复（Up/Down/M/Wheel）
+- `adjustSpeed(player, osd, delta)` — 替代 4 处重复（[/]/菜单 slower/faster）
+- `adjustDelay(player, osd, property, delta)` — 替代 6 处重复（z/x/g/h/菜单）
+- `adjustEq(player, osd, property, delta)` — 替代 18 处重复（1-8 键 + 菜单 8 项）
+
+`DesktopShortcutContext` 类持有所有快捷键需要的状态（player/layoutManager/osd/...），`skipNextCallback` 作为 `var` 让 App 运行时通过 `onSkipNextRegistered` 回调填充。
+
+#### 5. 右键菜单（`DesktopContextMenu.kt`）
+- 顶层 `showContextMenu(...)` 函数，参数显式列出所有依赖
+- Video EQ 子菜单通过 `addEqItem(key, property, delta, osd, player)` helper 把 8 个重复项压缩到 8 行
+- 所有 label 走 `I18n.get()`，与快捷键面板保持一致
+
+#### 6. 鼠标控制器（`CanvasMouseController.kt`）
+- 拖拽模式从 magic number `0/1/2/3` 改为命名常量 `DRAG_NONE/SEEK/VOLUME/BRIGHTNESS`
+- 持有 dragMode/dragStartX/dragStartY/dragStartValue/dragOccurred 局部状态
+- 右键点击 → 调用顶层 `showContextMenu(...)` 函数（来自 DesktopContextMenu.kt）
+- `skipNextCallback: () -> (() -> Unit)?` 设计让控制器每帧拉取最新回调，避免 stale 引用
+
+#### 7. 瘦身后的 Main.kt（201 行）
+仅保留：
+- main() 入口
+- mpv + VfsManager 实例化 + shutdown hook
+- JFrame / JPanel / Canvas / ComposePanel 装配
+- `TransferHandler` 拖放
+- 5 个 `mutableStateOf` 状态 + LayoutManager 关联
+- Compose `App(...)` 调用（仍是较大的参数列表，对应 A7 问题）
+- `windowOpened` / `windowClosing` 生命周期
+
+### 编译验证
+
+- ✅ `:app-desktop:compileKotlinDesktop` — BUILD SUCCESSFUL（无 warning）
+- ✅ `:app-android:compileDebugKotlin` — BUILD SUCCESSFUL（不影响 Android）
+
+### 文件变更
+
+```
+新增：
+  app-desktop/src/desktopMain/kotlin/dev/windplayer/Win32Api.kt
+  app-desktop/src/desktopMain/kotlin/dev/windplayer/DesktopPersistence.kt
+  app-desktop/src/desktopMain/kotlin/dev/windplayer/LayoutManager.kt
+  app-desktop/src/desktopMain/kotlin/dev/windplayer/DesktopShortcuts.kt
+  app-desktop/src/desktopMain/kotlin/dev/windplayer/DesktopContextMenu.kt
+  app-desktop/src/desktopMain/kotlin/dev/windplayer/CanvasMouseController.kt
+
+修改：
+  app-desktop/src/desktopMain/kotlin/dev/windplayer/Main.kt   # 1304 → 201 行
+```
+
+### 收益
+
+1. **可维护性**：找一处快捷键逻辑从「在 1300 行文件里搜索」→「直接打开 DesktopShortcuts.kt」
+2. **去重**：抽出的 4 个 action helper 跨键盘和菜单复用，未来新增「鼠标手势触发速度调整」可直接调用 `adjustSpeed`
+3. **可测试性**：纯逻辑函数（持久化、动作 helper）现在可以单独 unit test（虽然项目暂未设测试目录）
+4. **可读性**：每个文件 < 290 行，符合一般 IDE 一屏滚动范围
+
+---
+
+## 阶段三十六：A4 + A5 KMP 源集整理 (已完成)
+
+### A4：PhosphorIcons 下沉到 desktopMain
+
+**背景**：原 `ui-compose/src/commonMain/.../Icons.kt` 通过 `expect fun iconPainter(name)` + `actual` 机制让 desktop 加载 SVG、android 返回 `ColorPainter(Transparent)`。但 Grep 验证显示 **Android 端 0 处调用** `iconPainter` 或 `PhosphorIcons`（Android UI 用 `androidx.compose.material:material-icons-extended`），这套 expect/actual 是纯负担。
+
+**变更**：
+- 删除 `ui-compose/src/commonMain/.../Icons.kt`（expect 声明 + PhosphorIcons 常量）
+- 删除 `ui-compose/src/androidMain/.../Icons.kt`（stub `actual`）
+- `ui-compose/src/desktopMain/.../Icons.kt` 合并：移除 `actual` 关键字，直接声明 `PhosphorIcons` 对象 + `iconPainter` 函数
+
+**结果**：
+- commonMain/ui/ 从 3 个文件减少到 2 个（I18n.kt + PlayerSettings.kt）
+- androidMain/ui/ 为空
+- desktopMain/ui/ 拥有完整的 7 个文件
+- 消除 expect/actual 启动开销，删除一个无用的跨平台抽象
+
+### A5：删除 mobileMain 中间源集
+
+**背景**：阶段二十四为预留 iOS 适配引入 `mobileMain` 中间源集（`commonMain → mobileMain → androidMain`），但实际只有一个 9 行注释的 `MobileApp.kt` stub，且 Android UI 全在 `app-android` 模块。徒增复杂度，并迫使 `gradle.properties` 设 `kotlin.mpp.applyDefaultHierarchyTemplate=false`。
+
+**变更**：
+1. 删除 `ui-compose/src/mobileMain/`（整个目录）
+2. 从 3 个 `build.gradle.kts` 移除 `mobileMain` 创建：
+   - `core-mpv/build.gradle.kts`：mobileMain 是空壳，直接删除
+   - `core-vfs/build.gradle.kts`：mobileMain 是空壳，直接删除
+   - `ui-compose/build.gradle.kts`：mobileMain 有实际依赖（core-mpv/core-vfs/compose deps），**移到 `androidMain` 显式声明**
+3. 从 `gradle.properties` 移除 `kotlin.mpp.applyDefaultHierarchyTemplate=false`
+
+**关于 hierarchy template**：移除标志后 Kotlin 默认会创建 `jvmMain` 中间源集（共享给 desktop + android）。由于 commonMain 中已有 JVM 专属代码（VFS clients）且两端都是 JVM target，编译完全正常，无需新建 `jvmMain` 目录。
+
+### 编译验证
+
+- ✅ `:app-desktop:compileKotlinDesktop` — BUILD SUCCESSFUL
+- ✅ `:app-android:compileDebugKotlin` — BUILD SUCCESSFUL
+- ✅ `:app-android:assembleDebug` — BUILD SUCCESSFUL（APK 107.17 MB，与前批次一致）
+
+### 文件变更总结
+
+```
+删除：
+  ui-compose/src/commonMain/kotlin/dev/windplayer/ui/Icons.kt           # expect 声明 + PhosphorIcons
+  ui-compose/src/androidMain/kotlin/dev/windplayer/ui/Icons.kt          # stub actual
+  ui-compose/src/mobileMain/kotlin/dev/windplayer/ui/MobileApp.kt       # 9 行 stub
+  ui-compose/src/mobileMain/                                            # 整个目录
+
+修改：
+  ui-compose/src/desktopMain/kotlin/dev/windplayer/ui/Icons.kt          # 合并 PhosphorIcons + iconPainter（去 actual）
+  core-mpv/build.gradle.kts                                              # 移除 mobileMain
+  core-vfs/build.gradle.kts                                              # 移除 mobileMain
+  ui-compose/build.gradle.kts                                            # 移除 mobileMain，依赖移到 androidMain
+  gradle.properties                                                      # 移除 applyDefaultHierarchyTemplate=false
+```
+
+### 收益
+
+1. **减少 3 个无用文件 + 1 个空目录**
+2. **消除一个 expect/actual 抽象**（PhosphorIcons 跨平台机制对 Android 无意义）
+3. **简化 KMP 模块结构**：mobileMain 中间层删除后，依赖关系从 `common → mobile → android` 简化为 `common → android`
+4. **`gradle.properties` 更标准**：恢复 Kotlin 默认 hierarchy template，减少项目特异配置
+5. **APK 大小不变**（107.17 MB）—— 这些都是源码级整理，不影响二进制产物
+
+---
+
+## 阶段三十七：A7 App.kt 参数对象化 (已完成)
+
+将原本 23 个参数的 `App()` composable 重构为 5 个参数的版本，使用三个参数对象分组。
+
+### 设计
+
+引入 `DesktopTypes.kt`，定义三个 `@Stable` 类型承载 App 的输入：
+
+| 类型 | 角色 | 字段 |
+|------|------|------|
+| `DesktopAppState` | 数据类，只读快照状态从 Main → App | `player`, `vfsManager`, `settings`, `isFullscreen`, `recentFiles`, `bookmarks` |
+| `DesktopAppCallbacks` | 接口，事件从 App → Main，所有方法默认 no-op | `onScreenChange`, `onTracksToggle`, `onToggleFullscreen`, `onOsdEmit`, `onSkipNextRegistered`, `onSettingsChanged`, `onFilePlayed`, `onPositionUpdate`, `onBookmarkAdded`, `onBookmarkRemoved` |
+| `DesktopAppFlows` | 数据类，冷 SharedFlow streams | `osdEvents`, `dropFilePath`, `playlistToggle`, `cheatsheetToggle` |
+
+**为什么用 interface 而不是 `data class` 装 lambdas**：
+- 方法名直接文档化，IDE 跳转方便
+- 默认 no-op 实现在 interface 内，调用方只需 override 关心的方法
+- companion object `NoOp` 提供共享的空实例，避免每次创建
+
+**为什么用 `@Stable`**：让 Compose 编译器跳过对参数对象的不必要 `equals` 检查（虽然 `data class` 默认 stable，但 interface 需要 `@Stable` 显式标注，因为实现类可能不可推断）。
+
+### App() 签名对比
+
+```kotlin
+// 之前：23 个参数
+@Composable
+fun App(
+    player: MpvPlayer,
+    vfsManager: VfsManager,
+    initialFilePath: String = "",
+    onScreenChange: ((AppScreen) -> Unit)? = null,
+    onTracksToggle: ((Boolean) -> Unit)? = null,
+    onToggleFullscreen: (() -> Unit)? = null,
+    isFullscreen: Boolean = false,
+    osdEvents: SharedFlow<String>? = null,
+    onOsdEmit: ((String) -> Unit)? = null,
+    dropFilePath: SharedFlow<String>? = null,
+    playlistToggle: SharedFlow<Unit>? = null,
+    cheatsheetToggle: SharedFlow<Unit>? = null,
+    onSkipNextRegistered: ((() -> Unit) -> Unit)? = null,
+    settings: PlayerSettings = PlayerSettings.DEFAULT,
+    onSettingsChanged: ((PlayerSettings) -> Unit)? = null,
+    recentFiles: List<RecentFile> = emptyList(),
+    onFilePlayed: ((name: String, path: String, isLocal: Boolean, serverId: String?) -> Unit)? = null,
+    onPositionUpdate: ((filePath: String, position: Double, duration: Double) -> Unit)? = null,
+    bookmarks: List<String> = emptyList(),
+    onBookmarkAdded: ((path: String) -> Unit)? = null,
+    onBookmarkRemoved: ((path: String) -> Unit)? = null,
+    modifier: Modifier = Modifier
+)
+
+// 之后：5 个参数
+@Composable
+fun App(
+    state: DesktopAppState,
+    callbacks: DesktopAppCallbacks = DesktopAppCallbacks.NoOp,
+    flows: DesktopAppFlows = DesktopAppFlows(),
+    initialFilePath: String = "",
+    modifier: Modifier = Modifier
+)
+```
+
+**减少 78%**（23 → 5）。
+
+### Main.kt 调用点对比
+
+调用点从「23 个命名 lambda」改为构造三个对象。回调实现从「inline lambda」改为 `object : DesktopAppCallbacks { override fun ... }`：
+
+```kotlin
+App(
+    state = DesktopAppState(
+        player = player,
+        vfsManager = vfsManager,
+        settings = settingsState,
+        isFullscreen = fullscreenState,
+        recentFiles = recentFilesState,
+        bookmarks = bookmarksState
+    ),
+    callbacks = object : DesktopAppCallbacks {
+        override fun onScreenChange(screen: AppScreen) = layoutManager.switchTo(screen)
+        override fun onTracksToggle(expanded: Boolean) = layoutManager.setTracksExpanded(expanded)
+        // ... 共 10 个 override，按需实现
+    },
+    flows = DesktopAppFlows(
+        osdEvents = osdEvents,
+        dropFilePath = dropEvents,
+        playlistToggle = playlistToggle,
+        cheatsheetToggle = cheatsheetToggle
+    )
+)
+```
+
+### PlayerScreen 的处理
+
+`PlayerScreen()` 也有 25 个参数，但本轮**保留原样**——它是 App 的内部细节（外部不直接调用），重构它需要触及 723 行内部逻辑。本轮目标是 App 的对外 API。
+
+App.kt 内部仍然把 `pendingPlayback`（`PlaybackParams?`）解构成 25 个参数传给 PlayerScreen，这是「内部复杂度」而非「外部 API 复杂度」，可以后续作为独立任务处理。
+
+### 编译验证
+
+- ✅ `:app-desktop:compileKotlinDesktop` — BUILD SUCCESSFUL（无新增 warning）
+- ✅ `:app-android:compileDebugKotlin` — BUILD SUCCESSFUL（不影响 Android）
+
+### 文件变更
+
+```
+新增：
+  ui-compose/src/desktopMain/kotlin/dev/windplayer/ui/DesktopTypes.kt  (54 行)
+
+修改：
+  ui-compose/src/desktopMain/kotlin/dev/windplayer/ui/App.kt          (223 → 203 行)
+  app-desktop/src/desktopMain/kotlin/dev/windplayer/Main.kt           (201 → 211 行)
+```
+
+### 收益
+
+1. **App() 对外 API 表达力**：23 个 `name = { ... }` lambda → 3 个语义清晰的对象（State/Callbacks/Flows）
+2. **新增 callback 不破坏调用方**：interface 默认 no-op，新方法只覆盖需要的地方
+3. **未来支持 ViewModel/Navigation**：将 DesktopAppState/Callbacks 替换为 ViewModel 派生类即可，无需重写 App() 签名
+4. **PlayerScreen 暂留**：作为下一轮工作（可选），不影响本轮 App API 简化目标
+
+---
+
+## 阶段三十八：PlayerScreen 参数对象化（A7 续）(已完成)
+
+延续阶段三十七的设计模式，将 `PlayerScreen()` 从 25 个参数减为 8 个。
+
+### 关键洞察
+
+**`PlaybackParams` 已经包含了 PlayerScreen 需要的大部分参数**：
+- `streamUrl` ← `initialFilePath`
+- `subtitleFiles` ← `initialSubtitleFiles`
+- `externalAudioUrls` ← `initialExternalAudioUrls`
+- `mpvOptions` ← `initialMpvOptions`
+- `serverId` ← `playbackServerId`
+- `dirPath` ← `playbackDirPath`
+- `isLocal` ← `playbackIsLocal`
+- `directoryVideoPaths`
+- `currentFileIndex`
+- `resumePosition`
+- `filePath`
+
+共 **11 个参数**其实只是 App.kt 把 `pendingPlayback: PlaybackParams?` 解构再传给 PlayerScreen。重构后直接传整个 `params: PlaybackParams?`，由 PlayerScreen 内部解构。
+
+### 设计
+
+延续阶段三十七的 State/Callbacks/Flows 三分模式：
+
+| 类型 | 角色 | 字段/方法 |
+|------|------|----------|
+| `PlaybackParams` (复用 core-vfs 现有 data class) | 播放参数（来自 `pendingPlayback`） | 11 个字段 |
+| `PlayerCallbacks` (interface, 新增) | 事件 PlayerScreen → App | `onBack`, `onTracksToggle`, `onToggleFullscreen`, `onJumpToFile`, `onOsdEvent`, `onPositionUpdate` |
+| `PlayerFlows` (data class, 新增) | 冷 SharedFlow streams | `osdEvents`, `playlistToggle`, `cheatsheetToggle` |
+
+剩余直接参数：`player`、`vfsManager`、`isFullscreen`、`autoPlayNext`、`modifier`。
+
+### PlayerScreen() 签名对比
+
+```kotlin
+// 之前：25 个参数
+@Composable
+fun PlayerScreen(
+    player: MpvPlayer,
+    initialFilePath: String = "",
+    initialSubtitleFiles: List<String> = emptyList(),
+    initialExternalAudioUrls: List<String> = emptyList(),
+    initialMpvOptions: Map<String, String> = emptyMap(),
+    onBack: (() -> Unit)? = null,
+    onTracksToggle: ((Boolean) -> Unit)? = null,
+    onToggleFullscreen: (() -> Unit)? = null,
+    isFullscreen: Boolean = false,
+    osdEvents: SharedFlow<String>? = null,
+    vfsManager: VfsManager? = null,
+    playbackServerId: String? = null,
+    playbackDirPath: String? = null,
+    playbackIsLocal: Boolean = false,
+    directoryVideoPaths: List<String> = emptyList(),
+    currentFileIndex: Int = -1,
+    onPlayNextFile: ((filePath: String) -> Unit)? = null,
+    onJumpToFile: ((filePath: String) -> Unit)? = null,
+    onOsdEvent: ((String) -> Unit)? = null,
+    resumePosition: Double = 0.0,
+    filePath: String = "",
+    playlistToggle: SharedFlow<Unit>? = null,
+    cheatsheetToggle: SharedFlow<Unit>? = null,
+    onPositionUpdate: ((filePath: String, position: Double, duration: Double) -> Unit)? = null,
+    modifier: Modifier = Modifier
+)
+
+// 之后：8 个参数
+@Composable
+fun PlayerScreen(
+    player: MpvPlayer,
+    params: PlaybackParams? = null,
+    callbacks: PlayerCallbacks = PlayerCallbacks.NoOp,
+    flows: PlayerFlows = PlayerFlows(),
+    vfsManager: VfsManager? = null,
+    isFullscreen: Boolean = false,
+    autoPlayNext: Boolean = false,
+    modifier: Modifier = Modifier
+)
+```
+
+**减少 68%**（25 → 8）。
+
+### 关键设计决策
+
+#### 1. 复用 `PlaybackParams` 而不是新建 wrapper
+
+`PlaybackParams` 本就是 App.kt 维护的核心数据类，11 个播放参数都在里面。直接传 `params: PlaybackParams?` 而不是新建 `PlayerParams` wrapper 避免一层无意义的转换。
+
+PlayerScreen 在函数体顶部用 `val initialFilePath = params?.streamUrl ?: ""` 等 11 行解构，下游逻辑完全不变。
+
+#### 2. 合并 `onPlayNextFile` 与 `onJumpToFile`
+
+原代码两个 callback 做同一件事（调用 `playNextFile(filePath)`），仅区分「EOF 自动触发」vs「用户点击」。`onPlayNextFile = null` 用于表达「autoPlayNext 设置关闭」。
+
+重构后合并为单一 `onJumpToFile`，新增 `autoPlayNext: Boolean` 参数控制是否在 EOF 时自动调用：
+- `autoPlayNext = true` + EOF → 调用 `callbacks.onJumpToFile(nextPath)`
+- 用户点击 playlist → 调用 `callbacks.onJumpToFile(nextPath)`
+- 两种场景完全统一
+
+这消除了「用 null callback 表达设置项」的反模式。
+
+#### 3. callbacks 调用从 `?.invoke()` 改为直接调用
+
+```kotlin
+// 之前
+onBack?.invoke()
+onTracksToggle?.invoke(showPlaylist)
+onPositionUpdate?.invoke(fp, position, duration)
+
+// 之后
+callbacks.onBack()
+callbacks.onTracksToggle(showPlaylist)
+callbacks.onPositionUpdate(fp, position, duration)
+```
+
+interface 的默认 no-op 实现使 null 检查不再需要。
+
+#### 4. flows 从 `flow?.let { ... }` 改为 `flow?.collect { ... }`
+
+interface 默认 no-op 不适用于 SharedFlow（data class），所以仍用 `flow?.xxx?.collect { ... }` 模式。但代码更简洁：
+
+```kotlin
+// 之前
+LaunchedEffect(osdEvents) {
+    if (osdEvents == null) return@LaunchedEffect
+    osdEvents.collectLatest { ... }
+}
+
+// 之后
+LaunchedEffect(flows.osdEvents) {
+    flows.osdEvents?.collectLatest { ... }
+}
+```
+
+### App.kt 调用点对比
+
+```kotlin
+// 之前：25 个参数（解构 pendingPlayback 后传给 PlayerScreen）
+PlayerScreen(
+    player = player,
+    initialFilePath = pendingPlayback?.streamUrl ?: initialFilePath,
+    initialSubtitleFiles = pendingPlayback?.subtitleFiles ?: emptyList(),
+    /* ... 22 more ... */
+)
+
+// 之后：8 个参数（直接传 pendingPlayback + object : PlayerCallbacks）
+PlayerScreen(
+    player = player,
+    params = pendingPlayback,
+    callbacks = object : PlayerCallbacks {
+        override fun onBack() { /* ... */ }
+        override fun onTracksToggle(expanded: Boolean) = callbacks.onTracksToggle(expanded)
+        override fun onToggleFullscreen() = callbacks.onToggleFullscreen()
+        override fun onJumpToFile(filePath: String) = playNextFile(filePath)
+        override fun onOsdEvent(text: String) = callbacks.onOsdEmit(text)
+        override fun onPositionUpdate(filePath: String, position: Double, duration: Double) =
+            callbacks.onPositionUpdate(filePath, position, duration)
+    },
+    flows = PlayerFlows(
+        osdEvents = flows.osdEvents,
+        playlistToggle = flows.playlistToggle,
+        cheatsheetToggle = flows.cheatsheetToggle
+    ),
+    vfsManager = vfsManager,
+    isFullscreen = state.isFullscreen,
+    autoPlayNext = state.settings.autoPlayNext,
+    modifier = modifier
+)
+```
+
+### 编译验证
+
+- ✅ `:app-desktop:compileKotlinDesktop` — BUILD SUCCESSFUL
+- ✅ `:app-android:compileDebugKotlin` — BUILD SUCCESSFUL
+
+### 文件变更
+
+```
+修改：
+  ui-compose/src/desktopMain/kotlin/dev/windplayer/ui/DesktopTypes.kt   (54 → 84 行，+PlayerCallbacks/+PlayerFlows)
+  ui-compose/src/desktopMain/kotlin/dev/windplayer/ui/PlayerScreen.kt   (723 → 697 行)
+  ui-compose/src/desktopMain/kotlin/dev/windplayer/ui/App.kt            (203 → 197 行)
+```
+
+### 整体收益（A7 + A7 续）
+
+两个最大的 composable 都已重构：
+
+| Composable | 之前参数数 | 之后参数数 | 减少 |
+|------------|-----------|-----------|------|
+| App() | 23 | 5 | 78% |
+| PlayerScreen() | 25 | 8 | 68% |
+
+桌面 UI 层的对外 API 表面积大幅减少，参数对象化使后续扩展（新增 callback / 新增 flow）不再破坏调用方。
+
+---
+
+## 阶段三十九：L 系列批量清理 (已完成)
+
+一次性修复 8 个 Low-severity 问题（L6/L7/L8/L9/L11/L12/L13/L14），消除了代码审查中发现的所有细节体验类问题。**至此 L1-L15 全部 15 项已完成。**
+
+### 各项详情
+
+#### L11 — FileBrowserScreen 缩进修复
+- 第 372-377 行 6 个闭合括号缩进完全错乱，手动重排为正确层级（32/28/24/20/16/12 空格）
+
+#### L7 — ServerBrowseScreen 返回键导航
+- 新增 `handleBack()` 函数：当前路径 == 服务器 basePath 时退出，否则 `onNavigate(parent)` 上一级
+- BackHandler 和 TopAppBar 都改用 `handleBack()`
+
+#### L6 — ServerStore 加密回退警告
+- 新增 `@Volatile var encryptionActive: Boolean` 公开状态
+- catch 分支中 `Log.e(TAG, "...falling back to plaintext: ${e.message}")`
+- MobileApp 启动时主动检查，若 `encryptionActive == false` 显示 Toast 警告用户密码会明文存储
+
+#### L12 — 桌面端 mpv PROPERTY_CHANGE 事件分支
+- 在 `MpvPlayer.desktop.kt` 事件循环 `when` 中新增 `MPV_EVENT_PROPERTY_CHANGE` 分支
+- 解析 `mpv_event_property` 结构（name/format/data，x86_64 偏移 0/8/16）
+- 支持 STRING / FLAG / INT64 / DOUBLE 四种 format
+- 为未来 A2（observer 替代轮询）铺路
+
+#### L9 — WebDAV PROPFIND 解析器重构
+- 75 行 4 层嵌套 → 22 行 2 层嵌套
+- 抽出 4 个 helper：`parseResponse` / `findChildElement` / `hasChildElement` / `parseHttpDate`
+
+#### L8 — MobileVfsManager 连接生命周期
+- 原代码「connect 后从不 disconnect」导致 SSH/FTP socket 泄漏
+- finally 块加入 `client.disconnect()`
+- 同时把 `listDirectory` inline comparator 替换为 `FileNodeComparator`
+
+#### L13 — println → java.util.logging
+- 7 个文件 31 处 `println("[ClassName] ...")` 全部替换
+- 每文件新增 `private val LOG = Logger.getLogger("dev.windplayer.xxx.ClassName")`
+- 含 "failed" 的 → `LOG.warning(...)`，其余 → `LOG.info(...)` 或 `LOG.fine(...)`
+- 桌面端可配 `java.util.logging.config.file` 控制日志级别
+
+#### L14 — 静默异常 catch 添加日志
+- **保留静默**：disconnect 失败、资源关闭失败、parseHttpDate 失败（预期失败，日志会刷屏）
+- **新增 warning 日志**：
+  - `VfsManager.kt` siblings 列表失败（影响外置轨道匹配）
+  - `VfsManager.kt` 未知协议名（用户配置可能损坏）
+- 桌面端事件循环 `catch (_: Exception) { /* ignore */ }` 改为 `catch (e: Exception) { LOG.log(Level.WARNING, "malformed property event", e) }`
+
+### 编译验证
+
+- ✅ `:app-desktop:compileKotlinDesktop` — BUILD SUCCESSFUL
+- ✅ `:app-android:compileDebugKotlin` — BUILD SUCCESSFUL
+- ✅ 核心模块 `core-mpv` + `core-vfs` 零 `println` 残留
+
+### 文件变更
+
+```
+修改：
+  app-android/src/main/kotlin/.../ServerStore.kt             # encryptionActive + Log.e
+  app-android/src/main/kotlin/.../ServerBrowseScreen.kt      # handleBack()
+  app-android/src/main/kotlin/.../MobileVfsManager.kt        # disconnect + FileNodeComparator
+  app-android/src/main/kotlin/.../MobileApp.kt               # 加密回退 Toast
+  core-mpv/src/desktopMain/.../MpvPlayer.desktop.kt          # PROPERTY_CHANGE 分支 + LOG
+  core-vfs/src/commonMain/.../SftpClient.kt                  # LOG
+  core-vfs/src/commonMain/.../WebdavClient.kt                # 重构 PROPFIND + LOG
+  core-vfs/src/commonMain/.../FtpClient.kt                   # LOG
+  core-vfs/src/desktopMain/.../LocalClient.kt                # LOG
+  core-vfs/src/desktopMain/.../StreamProxy.kt                # LOG
+  core-vfs/src/desktopMain/.../VfsManager.kt                 # LOG + 静默 catch 警告
+  ui-compose/src/desktopMain/.../FileBrowserScreen.kt        # 缩进修复
+```
+
+---
+
+## 阶段四十：A2 PlayerScreen 用 observer 替代轮询 (已完成)
+
+利用阶段三十九 L12 补齐的 `MPV_EVENT_PROPERTY_CHANGE` 事件分支，把 PlayerScreen 的 3 个轮询循环整合为 1 个，并注册 mpv property observers 驱动低频状态更新。
+
+### 优化前后对比
+
+| 指标 | 优化前 | 优化后 | 减少 |
+|------|--------|--------|------|
+| `while(true){delay()}` 循环数 | 3 个（200ms / 1000ms / events） | 2 个（200ms / events） | -1 |
+| 每秒 JNA 跨语言调用 | ~23 次（4×5 + 3×1 + collect 频率） | ~5 次（1×5 + collect 频率） | **-78%** |
+| 轮询的属性 | `pause`、`time-pos`、`duration`、`eof-reached`、`volume`、`mute`、`speed`（7 个） | 仅 `time-pos`（1 个） | -6 |
+
+与阶段十四的预期目标（「~23 次/秒 → 减少 23%」）相比，实际减少 **78%**，因为当时只是把 6 属性拆为快慢两循环，这次直接消除了其中 6 个的轮询需求。
+
+### 改造的 6 个属性
+
+| 属性 | MpvFormat | 旧轮询 | 新机制 |
+|------|-----------|--------|--------|
+| `pause` | FLAG | 200ms 读字符串 `pause != "yes"` | observer 派发 Boolean → `isPlaying` |
+| `volume` | INT64 | 1000ms 读 long | observer 派发 Long（拖拽滑块时跳过避免冲突） |
+| `mute` | FLAG | 1000ms 读字符串 `mute == "yes"` | observer 派发 Boolean → `isMuted` |
+| `speed` | DOUBLE | 1000ms 读 double | observer 派发 Double |
+| `duration` | DOUBLE | 200ms 读 double | observer 派发 Double |
+| `eof-reached` | FLAG | 200ms 读字符串 `== "yes"` 触发自动播放 | observer 派发 Boolean=true 时触发自动播放 |
+
+**保留轮询的属性**：仅 `time-pos`（DOUBLE）。它随帧率变化（~24-60 次/秒），用 observer 会每秒 flood SharedFlow 60+ 事件，把 EndFile/FileLoaded 等关键事件挤掉。200ms（5 Hz）轮询是 UX 与 IPC 开销的正确折中。
+
+### 关键设计决策
+
+#### 1. 防御性初始读取（FileLoaded 时）
+
+```kotlin
+is MpvEvent.FileLoaded -> {
+    ...
+    try {
+        duration = player.getPropertyDouble("duration")...
+        volume = player.getPropertyLong("volume")
+        isMuted = player.getPropertyString("mute") == "yes"
+        speed = player.getPropertyDouble("speed")
+    } catch (_: Exception) {}
+    ...
+}
+```
+
+`mpv_observe_property` 理论上注册时立即发射当前值，但为了对抗「mpv 版本/构建差异导致 initial event 不发」的边角情况，在 FileLoaded 时做一次同步读取。如果 observer 正常工作，这次读取只是写相同值（Compose 跳过重组）；如果不正常，状态至少不会卡在默认值。
+
+#### 2. volume 拖拽冲突保护
+
+```kotlin
+"volume" -> {
+    val v = event.value as? Long ?: return
+    if (!isVolumeDragging()) setVolume(v)  // 用户拖滑块时跳过 observer 回写
+}
+```
+
+拖拽滑块时用户每帧 `player.setProperty("volume", x)`，会触发 observer 立即回弹。跳过 observer 写入让用户拖拽手感顺滑，松手后下一次 observer 事件会同步最终值。
+
+#### 3. EOF 自动播放触发点迁移
+
+旧代码：200ms 轮询检查 `position >= duration - 1.0 && eof-reached == "yes"` 这个复合条件（位置启发式 + mpv 权威信号）。
+
+新代码：直接监听 `eof-reached == true`。mpv 在 EOF 时设置此 flag，比启发式更可靠（启发式可能在长文件末尾的 buffer 抖动中误触发）。`position >= duration - 1.0` 条件其实多余——eof-reached=true 本身就意味着到达末尾。
+
+#### 4. handlePropertyChange 提取为私有函数
+
+```kotlin
+private fun handlePropertyChange(
+    event: MpvEvent.PropertyChange,
+    setIsPlaying: (Boolean) -> Unit,
+    setIsMuted: (Boolean) -> Unit,
+    setVolume: (Long) -> Unit,
+    setSpeed: (Double) -> Unit,
+    setDuration: (Double) -> Unit,
+    onEofReached: () -> Unit,
+    isVolumeDragging: () -> Boolean
+) { ... }
+```
+
+把 PropertyChange 分发逻辑从 `events.collect` 的 `when` 分支里拉出来，调用方传 setter lambda。这样：
+- 分发表清晰可读（6 个属性 × 类型 → setter）
+- 不污染 events.collect 块（已经很长了）
+- 单元测试容易（pure function，无 Compose 依赖）
+
+### 编译验证
+
+- ✅ `:app-desktop:compileKotlinDesktop` — BUILD SUCCESSFUL
+- ✅ `:app-android:compileDebugKotlin` — BUILD SUCCESSFUL
+
+### 文件变更
+
+```
+修改：
+  ui-compose/src/desktopMain/.../PlayerScreen.kt
+    # + observer 注册（6 个属性）
+    # + PropertyChange 分发到 handlePropertyChange helper
+    # - 删除 1000ms slow loop（volume/mute/speed）
+    # - 简化 200ms fast loop（只保留 time-pos + position 上报）
+    # - 移除 eof-reached 轮询自动播放（迁移到 observer）
+    # + FileLoaded 防御性初始读取
+    # + handlePropertyChange 私有 helper 函数
+```
+
+### Android 端
+
+Android 的 MobilePlayerScreen 仍然使用 200ms 轮询（未在本轮重构）。Android 的 MPVLib observer 机制本就工作正常（阶段三十一已确认），可以套用同样的模式重构，但需要测试 libplayer.so 的 observer 在不同 Android 版本上的稳定性。当前优先级低（Android 端用得好好的），留作未来工作。
+
+### 剩余 A2 相关工作
+
+- 把 Android MobilePlayerScreen 也迁移到 observer（可选）
+- 增加 mpv observer 失败的遥测（如果 PropertyChange 长时间不发，自动降级到轮询）
+
+---
+
+## 阶段四十一：P0-3 KMP 源集彻底重组 (已完成)
+
+把 `core-vfs/commonMain` 中的 JVM 专属代码迁出，引入 `jvmShared` 中间源集。
+
+### 背景
+
+代码审查 P0-3：`SftpClient.kt`、`WebdavClient.kt`、`FtpClient.kt`、`VfsUtils.kt` 放在 `commonMain` 中，却 import 了：
+- `net.schmizz.sshj.*`（SSHJ）
+- `org.apache.commons.net.ftp.*`（Commons Net）
+- `io.ktor.client.engine.cio.*`（Ktor CIO）
+- `javax.xml.parsers.*` / `org.w3c.dom.*`（JVM XML）
+- `java.io.*` / `java.net.URLEncoder` / `java.util.logging.Logger`
+- `String.format(...)`（JVM-only）
+
+当前因为 Android 和 Desktop 都是 JVM target 才能编译，但严格违反 KMP「`commonMain` 必须 target-agnostic」的约定。
+
+### 修复方案：引入 `jvmShared` 中间源集
+
+```
+commonMain (target-agnostic)
+    └── jvmShared (JVM-only, shared)
+            ├── desktopMain (桌面端：LocalClient + StreamProxy + VfsManager)
+            └── androidMain (空，由 app-android 模块自行实现)
+```
+
+`jvmShared` 是 KMP 自定义中间源集（`val jvmShared by creating { dependsOn(commonMain) }`），同时被 `desktopMain` 和 `androidMain` 继承。这样：
+- JVM 专属 VFS 代码只写一份（在 jvmShared 中）
+- 两个 target 都能直接 import
+- commonMain 真正 portable，未来加 iOS / Native target 时不会冲突
+
+### 改造详情
+
+#### commonMain（保留 4 个文件，全部 target-agnostic）
+
+| 文件 | 内容 |
+|------|------|
+| `FileNode.kt` | 数据类 + `isVideo`/`isSubtitle`/`videoBaseName`/`findSidecarSubtitles` 扩展（不含 `formatFileSize`，已迁出） |
+| `ServerConfig.kt` | 数据类 + `bareHost`/`httpScheme`/`defaultPort` |
+| `VfsClient.kt` | interface + `PlaybackParams` 数据类 |
+| `TrackMatcher.kt` | 纯 Kotlin 匹配算法（无任何 import） |
+
+#### jvmShared（新增，4 个文件）
+
+| 文件 | 依赖 |
+|------|------|
+| `SftpClient.kt` | sshj |
+| `WebdavClient.kt` | Ktor CIO + javax.xml + java.io |
+| `FtpClient.kt` | commons-net |
+| `VfsUtils.kt` | `String.format` + `java.net.URLEncoder` + 新增 `formatFileSize`（从 FileNode.kt 迁来） |
+
+#### desktopMain（保留 3 个文件，桌面端独有）
+
+| 文件 | 内容 |
+|------|------|
+| `LocalClient.kt` | `java.io.File` 本地文件访问 |
+| `StreamProxy.kt` | `com.sun.net.httpserver` HTTP 代理 |
+| `VfsManager.kt` | 桌面端 VFS 门面 |
+
+#### androidMain（空目录）
+
+当前无内容。Android 端的 `MobileVfsManager` 在 `app-android` 模块中实现，直接 import `dev.windplayer.vfs.SftpClient` 等 jvmShared 类。
+
+### Gradle 配置变更（`core-vfs/build.gradle.kts`）
+
+```kotlin
+sourceSets {
+    val commonMain by getting {
+        dependencies {
+            implementation(libs.kotlinx.coroutines.core)
+            // 移除：ktor / sshj / commons-net 都搬到 jvmShared
+        }
+    }
+    val jvmShared by creating {
+        dependsOn(commonMain)
+        dependencies {
+            implementation(libs.kotlinx.coroutines.core)
+            implementation(libs.ktor.client.core)
+            implementation(libs.ktor.client.cio)
+            implementation(libs.sshj)
+            implementation(libs.commons.net)
+        }
+    }
+    val desktopMain by getting {
+        dependsOn(jvmShared)
+        dependencies { implementation("org.slf4j:slf4j-nop:2.0.16") }
+    }
+    val androidMain by getting {
+        dependsOn(jvmShared)
+    }
+}
+```
+
+### 文件移动
+
+```
+commonMain/kotlin/dev/windplayer/vfs/
+    ├── FileNode.kt           (保留，但 formatFileSize 迁出)
+    ├── ServerConfig.kt       (保留)
+    ├── TrackMatcher.kt       (保留)
+    ├── VfsClient.kt          (保留)
+    ├── SftpClient.kt         → 迁到 jvmShared/
+    ├── WebdavClient.kt       → 迁到 jvmShared/
+    ├── FtpClient.kt          → 迁到 jvmShared/
+    └── VfsUtils.kt           → 迁到 jvmShared/
+
+jvmShared/kotlin/dev/windplayer/vfs/  (新建)
+    ├── SftpClient.kt
+    ├── WebdavClient.kt
+    ├── FtpClient.kt
+    └── VfsUtils.kt           (+ 新增 formatFileSize)
+```
+
+### 关键设计决策
+
+#### 1. 为什么不直接移到 desktopMain？
+
+因为 Android 端的 `MobileVfsManager` 也直接使用 SftpClient/WebdavClient/FtpClient。如果只移到 desktopMain，Android 编译会断。引入 jvmShared 让两端共享 JVM 代码，避免重复实现。
+
+#### 2. 为什么不删 androidMain？
+
+虽然目前为空，但保留是为：
+- 未来需要 Android 专有 VFS 逻辑时（如基于 SAF 的 LocalClient 替代品）有地方放
+- KMP 模块结构对称性
+
+#### 3. formatFileSize 为什么迁出？
+
+它使用 `"%.1f %s".format(size, units[unitIndex])`（JVM-only 的 `String.format`）。虽然 1 行代码看似无关紧要，但严格 P0-3 的目标是「commonMain 必须 target-agnostic」，所以一并迁出。
+
+### 编译验证
+
+- ✅ `:app-desktop:compileKotlinDesktop` — BUILD SUCCESSFUL
+- ✅ `:app-android:compileDebugKotlin` — BUILD SUCCESSFUL
+
+### 收益
+
+1. **commonMain 真正 portable**：4 个文件全部 target-agnostic，未来加 iOS / Native target 时不需要任何代码迁移
+2. **JVM 代码去重**：SftpClient/WebdavClient/FtpClient 只一份，两端共享
+3. **依赖隔离**：sshj/ktor/commons-net 只在 jvmShared 声明，commonMain 干净
+4. **可测试性**：commonMain 中的 TrackMatcher / ServerConfig 可在任意 target 单元测试
+5. **符合 KMP 官方推荐实践**
+
+---
+
+## 阶段四十二：P1-5 桌面端密码加密（Windows DPAPI）(已完成)
+
+用 Windows DPAPI 加密 `~/.windplayer/servers.properties` 中的 server 密码字段。
+
+### 背景
+
+P1-5：`VfsManager.saveConfig()` 把 `server.$i.password=明文` 直接写入 Properties 文件。任何能读该文件的本机用户/进程都能看到所有服务器密码。
+
+Android 端早已用 `EncryptedSharedPreferences`（阶段三十一），桌面端这次跟上。
+
+### 加密方案：Windows DPAPI via JNA
+
+**为什么是 DPAPI 而不是 AES/KeyStore**：
+- DPAPI（`CryptProtectData` / `CryptUnprotectData`）用 Windows 用户账户凭据派生密钥，**无需管理任何密钥文件**
+- 同一 Windows 账户登录的进程都能解密；其他账户、其他机器都不能（即使复制文件过去）
+- 是 Windows 上「at-rest 密码存储」的标准做法（Chrome / Edge / Outlook 等都用）
+- JNA-platform 5.17.0 已封装好 `Crypt32Util.cryptProtectData(byte[])` / `cryptUnprotectData(byte[])`，无需自己写 JNA 结构映射
+
+**JNA-platform 5.17.0 API 备注**：与旧版本不同，5.17.0 的 `Crypt32Util` 只有 `cryptProtectData(byte[])`（1 参数）和 `cryptProtectData(byte[], int)`（data + flags）两种重载，**没有 2 参数 `byte[] entropy` 版本**。编译时遇到 `Null cannot be a value of a non-null type 'Int'` 错误就是被这里坑了。
+
+### 实现：`CryptoUtil.kt`（core-vfs/desktopMain 新增）
+
+```kotlin
+internal object CryptoUtil {
+    private const val PREFIX_DPAPI = "dpapi:"
+    private const val PREFIX_PLAIN = "plain:"
+    private val isWindows = System.getProperty("os.name").startsWith("Windows")
+
+    fun encrypt(plaintext: String): String {
+        if (plaintext.isEmpty()) return ""
+        if (!isWindows) return PREFIX_PLAIN + plaintext
+        return try {
+            val cipher = Crypt32Util.cryptProtectData(plaintext.toByteArray(Charsets.UTF_8))
+            PREFIX_DPAPI + Base64.getEncoder().encodeToString(cipher)
+        } catch (e: Throwable) {
+            LOG.warning("DPAPI encrypt failed, falling back to plaintext: ${e.message}")
+            PREFIX_PLAIN + plaintext
+        }
+    }
+
+    fun decrypt(stored: String): String = when {
+        stored.startsWith(PREFIX_DPAPI) -> /* Crypt32Util.cryptUnprotectData(...) */
+        stored.startsWith(PREFIX_PLAIN) -> stored.removePrefix(PREFIX_PLAIN)
+        else -> stored  // legacy plaintext (transparent passthrough)
+    }
+}
+```
+
+### 存储格式：前缀选择
+
+每个 password 字段加前缀标识编码方式：
+
+| 前缀 | 含义 | 安全级别 |
+|------|------|----------|
+| `dpapi:<base64>` | DPAPI 加密 | 强（绑 Windows 用户） |
+| `plain:<text>` | 显式标记的明文（非 Windows fallback） | 弱 |
+| `<text>`（无前缀） | 遗留明文（P1-5 之前） | 弱 |
+
+**`decrypt` 三种分支的处理**：
+1. `dpapi:` → 用 DPAPI 解密；失败返回 `""`（密码无法恢复）
+2. `plain:` → 去前缀返回明文
+3. 无前缀 → **直接返回明文**（向后兼容）
+
+### 向后兼容（透明迁移）
+
+旧用户的 `servers.properties` 里是无前缀的明文密码。`decrypt` 把它当 legacy 明文处理，应用照常工作。**用户一旦做任何会触发 saveConfig 的操作**（添加/删除/编辑任意服务器），所有密码就会被 `encrypt` 加上 `dpapi:` 前缀重新写回。
+
+无需主动迁移脚本，无需破坏性升级。
+
+### VfsManager.kt 改动
+
+```kotlin
+// saveConfig
+props.setProperty("server.$index.password", CryptoUtil.encrypt(server.password))
+
+// loadConfig
+val password = CryptoUtil.decrypt(props.getProperty("server.$i.password", ""))
+```
+
+仅 2 行改动。
+
+### 非 Windows 平台
+
+`isWindows == false` 时：
+- `encrypt` 返回 `plain:<text>`（标明显式明文，区别于 `dpapi:`）
+- `decrypt` 把 `plain:` 去前缀
+- `dpapi:` 前缀的数据无法解密（log 警告，返回 `""`）
+
+未来若正式支持 Linux，可引入 libsecret / KWallet；当前优先级低。
+
+### 烟囱测试
+
+```
+PLAIN: mySecretPass123!@#
+CIPHER (b64): AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAApnzT4Aiu2UKLYMNZlSrLFQAAAAACG...
+DECRYPTED: mySecretPass123!@#
+MATCH: true
+```
+
+通过 Java 直接调用 `Crypt32Util` 验证 DPAPI 在当前 Windows 环境工作正常。
+
+### 编译验证
+
+- ✅ `:app-desktop:compileKotlinDesktop` — BUILD SUCCESSFUL
+- ✅ `:app-android:compileDebugKotlin` — BUILD SUCCESSFUL（不影响 Android，Android 用 EncryptedSharedPreferences）
+
+### 文件变更
+
+```
+新增：
+  core-vfs/src/desktopMain/.../CryptoUtil.kt     # DPAPI 加密 + 前缀路由 + 兼容层
+
+修改：
+  core-vfs/build.gradle.kts                       # desktopMain + jna-platform 依赖
+  core-vfs/src/desktopMain/.../VfsManager.kt     # saveConfig/loadConfig 用 CryptoUtil
+```
+
+### 安全模型总结
+
+| 平台 | 加密方案 | 密钥来源 |
+|------|----------|----------|
+| **Windows** | DPAPI（`CryptProtectData`） | Windows 用户账户凭据 |
+| **Linux/其他** | 显式标记的明文（`plain:` 前缀） | 无 |
+| **Android** | `EncryptedSharedPreferences`（AES256-GCM/SIV） | Android Keystore |
+
+桌面端和 Android 端现在都加密密码，仅 Linux 桌面端因依赖缺失暂用明文（标有 `plain:` 前缀可识别）。
+
+---
+
+## 阶段四十三：P1-6 SSH 主机验证（TOFU + known_hosts 持久化）(已完成)
+
+实现 Trust-on-First-Use（TOFU）主机密钥验证，替代 `PromiscuousVerifier`。
+
+### 背景
+
+P1-6：`SftpClient` 和 `StreamProxy.StreamSession` 都用 `PromiscuousVerifier`，**每次连接都接受任何服务器密钥**。MITM 攻击者可以伪造 SSH 服务器窃取用户名/密码。
+
+OpenSSH 默认行为是「首次连接询问 + 持久化 + 后续严格验证」。本次实现等价的 TOFU 模式。
+
+### SSHJ 0.39 API 调研
+
+通过反编译 `sshj-0.39.0.jar` 确认 SSHJ 已封装 OpenSSH known_hosts 格式：
+
+| 类 | 角色 |
+|----|------|
+| `OpenSSHKnownHosts(File)` | 基类，解析/写入 known_hosts 文件，实现 `HostKeyVerifier` |
+| `OpenSSHKnownHosts.HostEntry(Marker, hostname, KeyType, PublicKey)` | 一个 host entry（Marker 通常 null） |
+| `OpenSSHKnownHosts.entries(): List<KnownHostEntry>` | 已加载的 entries（可变 List） |
+| `OpenSSHKnownHosts.write()` | 把 entries 持久化到文件 |
+| `hostKeyUnverifiableAction(hostname, key): Boolean` | 钩子：未知 host 时如何处理（默认返回 false = 拒绝） |
+| `hostKeyChangedAction(hostname, key): Boolean` | 钩子：已知 host 但 key 不匹配（默认返回 false = 拒绝 MITM） |
+| `ConsoleKnownHostsVerifier` | 官方示例子类，控制台询问用户 |
+
+参考 `ConsoleKnownHostsVerifier` 源码确认正确用法：构造 `HostEntry` → `entries().add(entry)` → `write()` → 返回 true。
+
+### 实现：`KnownHostsManager.kt`（jvmShared 新增）
+
+```kotlin
+class TofuHostKeyVerifier(knownHostsFile: File) : OpenSSHKnownHosts(knownHostsFile.ensureExists()) {
+    @Synchronized
+    override fun hostKeyUnverifiableAction(hostname: String, key: PublicKey): Boolean {
+        return try {
+            val entry = HostEntry(null, hostname, KeyType.fromKey(key), key)
+            entries().add(entry)
+            write()
+            LOG.info("TOFU: recorded new host key for $hostname")
+            true
+        } catch (e: Exception) {
+            LOG.warning("TOFU: failed to record host key for $hostname: ${e.message}")
+            false  // 持久化失败时拒绝，避免静默接受所有 key
+        }
+    }
+}
+
+object KnownHostsManager {
+    val verifier: HostKeyVerifier by lazy {
+        try { TofuHostKeyVerifier(File("~/.windplayer/known_hosts")) }
+        catch (e: Exception) {
+            LOG.warning("known_hosts unreadable, falling back to PromiscuousVerifier — MITM-vulnerable")
+            PromiscuousVerifier()
+        }
+    }
+}
+```
+
+### 行为对比
+
+| 场景 | 旧（PromiscuousVerifier） | 新（TofuHostKeyVerifier） |
+|------|---------------------------|---------------------------|
+| 首次连接 host A | 接受（不记录） | **接受并记录到 known_hosts** |
+| 第 2 次连接 host A | 接受（不验证） | **验证匹配 → 接受** |
+| 攻击者冒充 host A（key 不同） | **接受！❌** | **拒绝 ✓**（MITM 保护） |
+| 持久化失败（文件不可写） | 接受 | **拒绝**（fail-safe） |
+| known_hosts 文件不可读 | 接受 | 降级到 PromiscuousVerifier + 警告日志 |
+
+### 验证逻辑（OpenSSHKnownHosts 默认行为）
+
+```
+verify(hostname, port, key) {
+    if (any entry matches hostname+key) return true   // 已知 host + 匹配
+    if (any entry matches hostname but key differs) {
+        return hostKeyChangedAction(hostname, key)    // 默认 false = 拒绝
+    }
+    return hostKeyUnverifiableAction(hostname, key)   // 默认 false = 拒绝；TOFU 改为 true
+}
+```
+
+子类只需覆盖 `hostKeyUnverifiableAction` 实现 TOFU；`hostKeyChangedAction` 默认拒绝就是 MITM 保护。
+
+### 改造点
+
+#### `SftpClient.kt`（jvmShared）
+```kotlin
+// 之前
+client.addHostKeyVerifier(PromiscuousVerifier())
+// 之后
+client.addHostKeyVerifier(KnownHostsManager.verifier)
+```
+
+#### `StreamProxy.StreamSession`（desktopMain）
+```kotlin
+// 之前
+client.addHostKeyVerifier(PromiscuousVerifier())
+// 之后
+client.addHostKeyVerifier(KnownHostsManager.verifier)
+```
+
+Android 端（MobileVfsManager → SftpClient）自动受益，无需改动。
+
+### 单例 + lazy 初始化
+
+`KnownHostsManager.verifier` 用 `by lazy` 确保只创建一次（跨多个 client 共享 entries 缓存）。即使有多个 SSHClient 实例，TOFU 状态都在内存中一致。
+
+### 编译验证
+
+- ✅ `:app-desktop:compileKotlinDesktop` — BUILD SUCCESSFUL
+- ✅ `:app-android:compileDebugKotlin` — BUILD SUCCESSFUL
+- ✅ 验证：`PromiscuousVerifier` 在 `core-vfs/src/**/*.kt` 中只剩 `KnownHostsManager.kt` 的 fallback 引用（其他位置全部清除）
+
+### 文件变更
+
+```
+新增：
+  core-vfs/src/jvmShared/.../KnownHostsManager.kt   # TofuHostKeyVerifier + KnownHostsManager 单例
+
+修改：
+  core-vfs/src/jvmShared/.../SftpClient.kt          # 用 KnownHostsManager.verifier
+  core-vfs/src/desktopMain/.../StreamProxy.kt       # 用 KnownHostsManager.verifier
+```
+
+### 安全模型升级
+
+| 平台 | 之前 | 之后 |
+|------|------|------|
+| **SSH (SFTP)** | PromiscuousVerifier（每次都接受） | TOFU + known_hosts（首次记录，后续严格验证） |
+| **WebDAV** | Ktor 默认 TLS（正常 CA 验证） | 不变（已安全） |
+| **FTP** | 不支持 FTPS / TLS | 不变（FTP 本来就是明文协议） |
+
+### 已知限制
+
+1. **首次连接仍可能被 MITM**：TOFU 模式下，攻击者在用户首次连接时伪造服务器即可被信任。这是 TOFU 的固有特性（OpenSSH `StrictHostKeyChecking=accept-new` 也是这样）。要进一步加固需要「预先分发 known_hosts」或「带外验证指纹」。
+2. **指纹 UI 缺失**：当前没有显示指纹给用户人工对比的 UI。日志里有 `LOG.info` 记录接受过的 host。未来可加 Settings 页面查看/清空 known_hosts。
+3. **Linux/Mac 桌面**：known_hosts 文件路径 `~/.windplayer/known_hosts`，与 OpenSSH 默认的 `~/.ssh/known_hosts` 分开（避免污染用户 SSH 配置）。
+
+---
+
+## 阶段四十四：P0-4 Android EndFile reason 真实化（Kotlin 层推断）(已完成)
+
+通过 Kotlin 层属性查询推断 mpv end_file reason，无需修改 `libplayer.so` 的 C 源码。
+
+### 背景
+
+P0-4：Android 端 `MpvPlayer.android.kt` 的 `event(MPV_EVENT_END_FILE)` 分支用 `if (fileLoadedBefore) 0 else 4` 编造 reason。`libplayer.so` 的 JNI 桥 `event(int eventId)` 只传事件 ID，不传 `mpv_event_end_file.reason` 字段。
+
+### 实际 bug 影响
+
+旧代码区分不出 **STOP**（用户按返回键 / 调用 `stop` 命令）和 **EOF**（自然结束）：
+- 用户按返回键 → mpv 发 END_FILE reason=2 (STOP)
+- 旧代码：`fileLoadedBefore=true` → 报告 reason=0 (EOF)
+- `MobilePlayerScreen` 收到 `reason==0` 满足 `autoPlayNext && reason == 0` 条件
+- **触发自动播放下一个文件**，即使用户明确按了返回键
+
+实际未造成数据问题（`onBack` 立即把 `pendingFile = null` + `dispose()` 切换屏幕），但是 race condition / UX 异常。
+
+### 方案对比
+
+| 方案 | 描述 | 复杂度 |
+|------|------|--------|
+| **A. 修 C 代码** | 改 `libplayer.so` 的 `event(int)` 为 `event(int, int)`，传递 reason | 高（NDK 交叉编译 3 个 ABI） |
+| **B. Kotlin 层推断**（本方案） | 收到 END_FILE 时查询 `eof-reached` 属性推断 reason | 低 |
+
+选 B：纯 Kotlin 改动，无需重编译 native，立即生效。
+
+### 推断逻辑
+
+```kotlin
+private fun inferEndFileReason(wasLoaded: Boolean): Int {
+    val eof = MPVLib.getPropertyString("eof-reached") == "yes"
+    return when {
+        eof -> 0       // 自然结束
+        wasLoaded -> 2 // 加载过但没 EOF → STOP（用户停止 / 新 loadfile）
+        else -> 4      // 没加载成功 → ERROR
+    }
+}
+```
+
+依据：mpv 文档「`eof-reached` 在播放到达文件末尾时为 true，加载新文件或 seek 时为 false」。
+
+| 场景 | `eof-reached` | `wasLoaded` | 推断 reason |
+|------|---------------|-------------|-------------|
+| 播放到末尾自然结束 | `yes` | true | **0 (EOF)** ✓ |
+| 用户按返回 / `stop` | `no` | true | **2 (STOP)** ✓ |
+| 加载失败 | `no` | false | **4 (ERROR)** ✓ |
+| 加载新文件（旧被替换） | `no` | true | **2 (STOP)** ✓ |
+
+### 关键代码改动
+
+```kotlin
+// 之前（编造）
+MPVLib.MpvEvent.MPV_EVENT_END_FILE -> {
+    val r = if (fileLoadedBefore) 0 else 4
+    fileLoadedBefore = false
+    _events.tryEmit(MpvEvent.EndFile(r))
+}
+
+// 之后（推断）
+MPVLib.MpvEvent.MPV_EVENT_END_FILE -> {
+    val reason = inferEndFileReason(fileLoadedBefore)
+    fileLoadedBefore = false
+    _events.tryEmit(MpvEvent.EndFile(reason))
+}
+
+private fun inferEndFileReason(wasLoaded: Boolean): Int {
+    return try {
+        val eof = MPVLib.getPropertyString("eof-reached") == "yes"
+        when {
+            eof -> 0
+            wasLoaded -> 2
+            else -> 4
+        }
+    } catch (_: Exception) {
+        if (wasLoaded) 0 else 4  // 属性查询失败的兜底
+    }
+}
+```
+
+### UX 修复验证
+
+`MobilePlayerScreen` 收到 EndFile 的处理逻辑：
+
+```kotlin
+if (event.reason == 4) errorMsg = "Playback failed"
+else if (autoPlayNext && event.reason == 0 && currentIdx + 1 < directoryVideos.size) {
+    // auto-play next
+}
+```
+
+| 用户动作 | 真实 reason | 旧推断 reason | 新推断 reason | 行为 |
+|----------|-------------|---------------|---------------|------|
+| 自然播完 | 0 (EOF) | 0 | 0 | 自动播放下一首 ✓ |
+| 按返回键 | 2 (STOP) | **0 (错)** ❌ | **2 ✓** | 不自动播放 ✓ |
+| 加载失败 | 4 (ERROR) | 4 | 4 | 显示 "Playback failed" ✓ |
+
+**Bug 修复**：按返回键不再误触发自动播放。
+
+### 桌面端不变
+
+`MpvPlayer.desktop.kt` 已经从 `event.data?.getInt(0)` 直接读取真实 reason（mpv C struct 的第一个字段就是 reason）。本次改动只影响 Android。
+
+### 编译验证
+
+- ✅ `:app-desktop:compileKotlinDesktop` — BUILD SUCCESSFUL（不受影响）
+- ✅ `:app-android:compileDebugKotlin` — BUILD SUCCESSFUL
+
+### 已知限制
+
+1. **属性查询时机**：理论上 `eof-reached` 在 END_FILE 事件触发时已经被 mpv 设置。如果 mpv 内部在派发事件前重置该属性（实践中不会），推断会失败 → 走 catch 兜底（旧编造逻辑）。
+2. **REDIRECT (reason=5)**：mpv 处理播放列表时会发 REDIRECT。当前推断会归类为 STOP (2)，因为 `eof-reached=no`。对 UX 无影响（用户没在播列表）。
+3. **QUIT (reason=3)**：仅在 player 销毁时触发。归类为 STOP (2)，对 UX 无影响（player 都销毁了）。
+
+### 文件变更
+
+```
+修改：
+  core-mpv/src/androidMain/.../MpvPlayer.android.kt     # 新增 inferEndFileReason helper + 更新 event() 回调
+```
+
+### 未来若修 C 代码
+
+如果将来重新交叉编译 `libplayer.so`，可以让 `event(int)` 升级为 `event(int, int)`（带 reason），然后 MPVLib.kt 的 `EventObserver.event` 接口也加 reason 参数。届时 `inferEndFileReason` 可以删除，直接用真实 reason。当前 Kotlin 层推断是「最小代价最大收益」方案。
+
+---
+
+## 🎉 全部 22 个审查问题已修复
+
+从阶段三十三到阶段四十四，共 12 个修复批次：
+
+| 阶段 | 修复内容 | 问题数 |
+|------|----------|--------|
+| 33 | 代码审查修复批次 1-3（P0-1/P0-2/P1-1/P1-2/P1-3/P1-4/L1/L2/L3/L4/L5/L10/L15/A3） | 13 |
+| 34 | A6 重复代码抽取 | 1 |
+| 35 | A1 Main.kt 巨石拆分 | 1 |
+| 36 | A4 + A5 KMP 源集整理 | 2 |
+| 37-38 | A7 + PlayerScreen 参数对象化 | 2 |
+| 39 | L 系列批量清理（L6/L7/L8/L9/L11/L12/L13/L14） | 8 |
+| 40 | A2 PlayerScreen observer 替代轮询 | 1 |
+| 41 | P0-3 KMP 源集彻底重组 | 1 |
+| 42 | P1-5 桌面端密码加密（DPAPI） | 1 |
+| 43 | P1-6 SSH 主机验证 TOFU | 1 |
+| 44 | P0-4 Android EndFile reason 真实化 | 1 |
+
+**剩余未解决问题：0** ✓
+
+---
+
+## 阶段四十五：CI/CD 搭建（GitHub Actions）(已完成)
+
+搭建两阶段 CI/CD 流水线 + 测试基础设施。
+
+### 新增文件
+
+#### 1. `.github/workflows/ci.yml`（CI 流水线）
+触发：`push` 到 `master`/`main` 或任何 `pull_request`。
+
+| 步骤 | 命令 | 目的 |
+|------|------|------|
+| Checkout | `actions/checkout@v4` | 获取代码 |
+| Setup JDK 21 | `actions/setup-java@v4` (temurin) | 项目约定的 JDK 版本 |
+| Setup Android SDK | `android-actions/setup-android@v3` (platforms;android-36) | CI 不读 local.properties，自备 SDK |
+| Setup Gradle | `gradle/actions/setup-gradle@v3` | 缓存 ~/.gradle 加速后续构建 |
+| Compile Desktop | `:app-desktop:compileKotlinDesktop` | 验证 JVM target 编译 |
+| Run unit tests | `:core-vfs:desktopTest` | TrackMatcher 等 commonTest 单元测试 |
+| Build Android Debug APK | `:app-android:assembleDebug` | 输出 APK 用于人工冒烟 |
+| Upload APK | `actions/upload-artifact@v4` | 14 天保留，供 PR 评论者下载测试 |
+| Upload test results | `actions/upload-artifact@v4` | JUnit XML + HTML 报告，便于诊断失败 |
+
+并发控制：`concurrency: { group: ci-${{ github.ref }}, cancel-in-progress: true }` — 同分支新提交取消旧运行。
+
+#### 2. `.github/workflows/release.yml`（发布流水线）
+触发：tag push `v*`。
+
+| 步骤 | 目的 |
+|------|------|
+| Checkout + JDK + Android SDK + Gradle | 同 CI |
+| Extract version | 从 tag 名提取版本号（`v0.2.0` → `0.2.0`） |
+| Build Android Debug APK | 桌面端冒烟 APK（暂不签名，未来加 keystore 配置） |
+| Build Desktop distribution ZIP | `:app-desktop:distZip` 生成跨平台 JVM bundle |
+| Rename with version | `WindPlayer-<version>-android.apk` / `WindPlayer-<version>-desktop.zip` |
+| Create GitHub Release | `softprops/action-gh-release@v2`，自动生成 release notes |
+
+权限：`contents: write`（创建 release 必需）。
+
+**当前不生成的产物**（标 TODO）：
+- ❌ Signed Android release APK（需要 keystore 配置）
+- ❌ Desktop MSI（需要 Windows runner，可作为单独 job 后续添加）
+
+### 测试基础设施
+
+#### `core-vfs/src/commonTest/.../TrackMatcherTest.kt`（新增，9 个测试）
+
+目标：让 CI 流水线有东西可以测试，且一旦 TrackMatcher 回归立即报警。
+
+覆盖场景（依据 `Documents/external-media-track-matching-and-scheduling.md.md`）：
+- `VIDEO_EXTENSIONS` / `SUBTITLE_EXTENSIONS` 集合内容
+- `FileNode.isVideo` / `isSubtitle` / `FileNodeComparator`
+- Level 2 精确名称匹配（subtitle + audio）
+- Level 3 剧集特征匹配（含同集多字幕 + 排除异集字幕）
+- 无关文件不匹配（防误抓）
+
+```kotlin
+@Test
+fun `Level 3 episode feature match hits subtitles`() {
+    val v = video("Show.S01E01.mkv")
+    val siblings = listOf(
+        sub("Show.S01E01.eng.srt"),
+        sub("Show.S01E01.sc.srt"),
+        sub("Show.S01E02.sc.srt")  // 不同集 — 必须 NOT match
+    )
+    val matched = matchExternalTracks(v, siblings)
+    assertEquals(2, matched.size)
+}
+```
+
+#### `core-vfs/build.gradle.kts` — 新增 commonTest 依赖
+
+```kotlin
+val commonTest by getting {
+    dependencies {
+        implementation(kotlin("test"))
+    }
+}
+```
+
+### 本地验证
+
+完整模拟 CI 流水线（本地 Windows + JDK 21）：
+
+```
+./gradlew :app-desktop:compileKotlinDesktop :core-vfs:desktopTest :app-android:assembleDebug
+→ BUILD SUCCESSFUL in 27s
+
+TrackMatcherTest[desktop]: tests=9 failures=0 skipped=0 ✓
+```
+
+### `AGENTS.md`（根目录新增）
+
+为 AI 助手 / 新贡献者整理的速查文档，包括：
+- 项目布局
+- Desktop / Android 构建命令
+- 测试命令
+- CI/CD 工作流概述
+- 常见陷阱（local.properties / libmpv / JDK 版本 / PromiscuousVerifier / EndFile reason）
+
+### 文件变更总结
+
+```
+新增：
+  .github/workflows/ci.yml                                # CI 流水线
+  .github/workflows/release.yml                           # 发布流水线
+  AGENTS.md                                                # 速查文档
+  core-vfs/src/commonTest/.../TrackMatcherTest.kt         # 9 个单元测试
+
+修改：
+  core-vfs/build.gradle.kts                               # commonTest + kotlin-test 依赖
+```
+
+### CI/CD 设计决策
+
+#### 1. 用 Linux 而非 Windows runner
+
+Linux runner 最便宜（GitHub Actions 公共仓库免费，但私有仓库按时长计费）。CI 只做编译验证 + 测试，不需要 Windows 特定工具链。
+
+#### 2. CI 只跑 Debug，Release 跑 Release
+
+CI 流水线用 `:app-android:assembleDebug`（无需签名），release 流水线才需要 release 构建。这避免了在 PR 上消耗签名 keystore 的安全风险。
+
+#### 3. 缓存策略
+
+`gradle/actions/setup-gradle@v3` 自动缓存 `~/.gradle/caches`。配置 `cache-read-only: ${{ github.ref != 'master' && ... }}` 让 PR 只读缓存（避免每个 PR 写入不同 deps 撑爆缓存）。
+
+#### 4. 测试结果作为 artifact
+
+即使 CI 失败也上传 JUnit XML + HTML 报告（`if: always()`），方便开发者直接下载诊断。
+
+### 使用流程
+
+#### 日常开发（CI 自动验证）
+
+```bash
+git add .
+git commit -m "feat: ..."
+git push origin master
+# → CI 自动跑，PR/commit status 显示绿勾或红叉
+```
+
+#### 发布新版本
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+# → Release workflow 自动构建，生成 GitHub Release
+# → 附带 WindPlayer-0.2.0-android.apk + WindPlayer-0.2.0-desktop.zip
+```
+
+### 未来扩展
+
+- ✅ Phase 1（本次）：CI 编译 + 单元测试 + Release APK + Desktop ZIP
+- ⏳ Phase 2：Android release keystore + signed APK（需配置 secrets）
+- ⏳ Phase 3：Desktop MSI（Windows runner job）
+- ⏳ Phase 4：自动 changelog（从 commit history 生成）
+- ⏳ Phase 5：覆盖率报告（Jacoco）+ 代码质量（Detekt）
+- ⏳ Phase 6：Fastlane / Play Store 自动发布

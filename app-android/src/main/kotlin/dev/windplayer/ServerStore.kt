@@ -2,25 +2,41 @@ package dev.windplayer
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import dev.windplayer.vfs.ServerConfig
 import dev.windplayer.vfs.VfsProtocol
 
 object ServerStore {
+    private const val TAG = "ServerStore"
     private const val PREFS = "windplayer_servers_encrypted"
+
+    /**
+     * `true` once we have successfully opened the encrypted prefs.
+     * Read by [MainActivity]/MobileApp to surface a security warning to the user
+     * if encryption is unavailable on their device.
+     */
+    @Volatile
+    var encryptionActive: Boolean = false
+        private set
 
     private fun prefs(context: Context): SharedPreferences {
         return try {
             val masterKey = MasterKey.Builder(context)
                 .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
                 .build()
-            EncryptedSharedPreferences.create(
+            val prefs = EncryptedSharedPreferences.create(
                 context, PREFS, masterKey,
                 EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
                 EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
             )
-        } catch (_: Exception) {
+            encryptionActive = true
+            prefs
+        } catch (e: Exception) {
+            // Log loudly — passwords will be stored in plaintext from now on.
+            Log.e(TAG, "EncryptedSharedPreferences unavailable, falling back to plaintext: ${e.message}")
+            encryptionActive = false
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         }
     }

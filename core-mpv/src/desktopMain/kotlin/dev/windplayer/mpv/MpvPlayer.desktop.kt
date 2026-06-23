@@ -3,6 +3,10 @@ package dev.windplayer.mpv
 import com.sun.jna.Pointer
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
+import java.util.logging.Level
+import java.util.logging.Logger
+
+private val LOG = Logger.getLogger("dev.windplayer.mpv.MpvPlayer")
 
 actual class MpvPlayer actual constructor() {
 
@@ -24,14 +28,14 @@ actual class MpvPlayer actual constructor() {
         val ctx = lib.mpv_create()
         if (ctx == Pointer.NULL) throw IllegalStateException("Failed to create mpv context")
         handle = Pointer.nativeValue(ctx)
-        println("[MpvPlayer] context created, handle=$handle")
+        LOG.info("context created, handle=$handle")
     }
 
     actual fun initialize() {
         check(handle != 0L) { "mpv not created, call create() first" }
         checkError(lib.mpv_initialize(ptr()))
         running = true
-        println("[MpvPlayer] initialized")
+        LOG.info("initialized")
         startEventLoop()
     }
 
@@ -43,14 +47,41 @@ actual class MpvPlayer actual constructor() {
                 if (event == null) continue
                 when (event.event_id) {
                     MPV_EVENT_FILE_LOADED -> {
-                        println("[MpvPlayer] file loaded")
+                        LOG.fine("file loaded")
                         _events.tryEmit(MpvEvent.FileLoaded())
                     }
                     MPV_EVENT_IDLE -> _events.tryEmit(MpvEvent.Idle())
                     MPV_EVENT_END_FILE -> {
                         val reason = event.data?.getInt(0) ?: 0
-                        println("[MpvPlayer] end file, reason=$reason")
+                        LOG.fine("end file, reason=$reason")
                         _events.tryEmit(MpvEvent.EndFile(reason))
+                    }
+                    MPV_EVENT_PROPERTY_CHANGE -> {
+                        // mpv_event_property layout (x86_64):
+                        //   offset  0: const char* name
+                        //   offset  8: mpv_format format (int)
+                        //   offset 16: void* data
+                        val data = event.data
+                        if (data != null) {
+                            try {
+                                val namePtr = data.getPointer(0)
+                                if (namePtr != null) {
+                                    val name = namePtr.getString(0)
+                                    val format = data.getInt(8)
+                                    val valuePtr = data.getPointer(16)
+                                    val value: Any? = when (format) {
+                                        MPV_FORMAT_STRING -> valuePtr?.getString(0)
+                                        MPV_FORMAT_FLAG -> valuePtr != null && valuePtr.getInt(0) != 0
+                                        MPV_FORMAT_INT64 -> valuePtr?.getLong(0)
+                                        MPV_FORMAT_DOUBLE -> valuePtr?.getDouble(0)
+                                        else -> null // NONE / OSD_STRING / NODE / BYTE_ARRAY — not handled
+                                    }
+                                    _events.tryEmit(MpvEvent.PropertyChange(name, value))
+                                }
+                            } catch (e: Exception) {
+                                LOG.log(Level.WARNING, "malformed property event", e)
+                            }
+                        }
                     }
                 }
             }
@@ -70,32 +101,32 @@ actual class MpvPlayer actual constructor() {
         val cmdStr = args.joinToString(" ")
         val code = lib.mpv_command_string(ptr(), cmdStr)
         if (code < 0) {
-            println("[MpvPlayer] command($cmdStr) failed, error=$code")
+            LOG.warning("command($cmdStr) failed, error=$code")
         }
     }
 
     actual fun setOption(key: String, value: String) {
         if (handle == 0L) return
         val code = lib.mpv_set_option_string(ptr(), key, value)
-        if (code < 0) println("[MpvPlayer] setOption($key=$value) failed, error=$code")
+        if (code < 0) LOG.warning("setOption($key=$value) failed, error=$code")
     }
 
     actual fun setOption(key: String, value: Long) {
         if (handle == 0L) return
         val code = lib.mpv_set_option(ptr(), key, MPV_FORMAT_INT64, longArrayOf(value))
-        if (code < 0) println("[MpvPlayer] setOption($key=$value) failed, error=$code")
+        if (code < 0) LOG.warning("setOption($key=$value) failed, error=$code")
     }
 
     actual fun setProperty(key: String, value: String) {
         if (handle == 0L) return
         val code = lib.mpv_set_property_string(ptr(), key, value)
-        if (code < 0) println("[MpvPlayer] setProperty($key=$value) failed, error=$code")
+        if (code < 0) LOG.warning("setProperty($key=$value) failed, error=$code")
     }
 
     actual fun setProperty(key: String, value: Long) {
         if (handle == 0L) return
         val code = lib.mpv_set_property(ptr(), key, MPV_FORMAT_INT64, longArrayOf(value))
-        if (code < 0) println("[MpvPlayer] setProperty($key=$value) failed, error=$code")
+        if (code < 0) LOG.warning("setProperty($key=$value) failed, error=$code")
     }
 
     actual fun getPropertyString(name: String): String? {
@@ -139,6 +170,9 @@ actual class MpvPlayer actual constructor() {
         const val MPV_EVENT_PROPERTY_CHANGE = 22
         const val MPV_EVENT_SEEK = 20
         const val MPV_EVENT_PLAYBACK_RESTART = 21
+        const val MPV_FORMAT_NONE = 0
+        const val MPV_FORMAT_STRING = 1
+        const val MPV_FORMAT_FLAG = 3
         const val MPV_FORMAT_INT64 = 4
         const val MPV_FORMAT_DOUBLE = 5
     }

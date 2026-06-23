@@ -1,5 +1,7 @@
 package dev.windplayer.vfs
 
+import java.util.logging.Logger
+
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.apache.commons.net.ftp.FTP
@@ -7,6 +9,8 @@ import org.apache.commons.net.ftp.FTPClient
 import org.apache.commons.net.ftp.FTPFile
 import java.io.File
 import java.io.FileOutputStream
+
+private val LOG = Logger.getLogger("dev.windplayer.vfs.FtpClient")
 
 class FtpClient : VfsClient {
 
@@ -27,17 +31,17 @@ class FtpClient : VfsClient {
                 client.login("anonymous", "")
             }
             if (!loggedIn) {
-                println("[FtpClient] login failed")
+                LOG.warning("login failed")
                 client.disconnect()
                 return@withContext false
             }
             client.enterLocalPassiveMode()
             client.setFileType(FTP.BINARY_FILE_TYPE)
             ftpClient = client
-            println("[FtpClient] connected to ${config.bareHost}:${config.defaultPort()}")
+            LOG.info("connected to ${config.bareHost}:${config.defaultPort()}")
             true
         } catch (e: Exception) {
-            println("[FtpClient] connect failed: ${e.message}")
+            LOG.warning("connect failed: ${e.message}")
             disconnect()
             false
         }
@@ -66,7 +70,7 @@ class FtpClient : VfsClient {
                 )
             }.sortedWith(FileNodeComparator)
         } catch (e: Exception) {
-            println("[FtpClient] listDirectory failed: ${e.message}")
+            LOG.warning("listDirectory failed: ${e.message}")
             emptyList()
         }
     }
@@ -93,7 +97,7 @@ class FtpClient : VfsClient {
             File(localPath).delete()
             throw RuntimeException("FTP download failed for $remotePath")
         }
-        println("[FtpClient] downloaded $remotePath -> $localPath")
+        LOG.info("downloaded $remotePath -> $localPath")
     }
 
     override fun isConnected(): Boolean {

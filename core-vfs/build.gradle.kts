@@ -11,24 +11,41 @@ kotlin {
         val commonMain by getting {
             dependencies {
                 implementation(libs.kotlinx.coroutines.core)
+            }
+        }
+
+        // Common test source set: target-agnostic tests for [commonMain] code.
+        val commonTest by getting {
+            dependencies {
+                implementation(kotlin("test"))
+            }
+        }
+
+        // jvmShared: code that requires the JVM stdlib or JVM-only libs
+        // (sshj / ktor-cio / commons-net / java.xml / String.format / URLEncoder).
+        // Both desktopMain and androidMain inherit from this so the protocol
+        // implementations can stay in one place instead of being duplicated.
+        val jvmShared by creating {
+            dependsOn(commonMain)
+            dependencies {
+                implementation(libs.kotlinx.coroutines.core)
                 implementation(libs.ktor.client.core)
                 implementation(libs.ktor.client.cio)
                 implementation(libs.sshj)
                 implementation(libs.commons.net)
             }
         }
+
         val desktopMain by getting {
+            dependsOn(jvmShared)
             dependencies {
                 implementation("org.slf4j:slf4j-nop:2.0.16")
+                implementation(libs.jna.platform)
             }
         }
 
-        val mobileMain by creating {
-            dependsOn(commonMain)
-        }
-
         val androidMain by getting {
-            dependsOn(mobileMain)
+            dependsOn(jvmShared)
         }
     }
 }

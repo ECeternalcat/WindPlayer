@@ -30,9 +30,7 @@ kotlin {
                 implementation(libs.jna)
             }
         }
-
-        val mobileMain by creating {
-            dependsOn(commonMain)
+        val androidMain by getting {
             dependencies {
                 implementation(project(":core-mpv"))
                 implementation(project(":core-vfs"))
@@ -42,10 +40,6 @@ kotlin {
                 implementation(compose.ui)
                 implementation(libs.kotlinx.coroutines.core)
             }
-        }
-
-        val androidMain by getting {
-            dependsOn(mobileMain)
         }
     }
 }
