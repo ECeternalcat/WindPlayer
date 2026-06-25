@@ -4217,3 +4217,216 @@ VfsUtilsTest[desktop]:    tests=25 failures=0 skipped=0
 - UI 集成测试（Compose Testing）
 - VFS 协议集成测试（mock SSH/HTTP 服务器）
 - MpvPlayer 单元测试（mock native 调用）
+
+---
+
+## 阶段四十七：Android 端 SFTP 连接与播放全链路修复 (已完成)
+
+### 问题背景
+
+Android 端 SFTP 功能完全不可用，日志报三类错误：
+1. `SLF4J(W): No SLF4J providers were found` — SSHJ 日志无 binding
+2. `Could not create known_hosts at /.windplayer/known_hosts` — Android `user.home` 是 `/`，无写权限
+3. `connect failed: no such algorithm: X25519 for provider BC` — Android 内置 BouncyCastle 精简版缺少关键算法
+
+### 1. SLF4J 警告消除
+
+将 `slf4j-nop` 从 `desktopMain` 移到 `jvmShared` 源集，桌面与 Android 都包含 provider。版本号纳入 `libs.versions.toml` 管理，不再硬编码。
+
+```
+修改：
+  core-vfs/build.gradle.kts          # slf4j-nop 从 desktopMain 移到 jvmShared
+  gradle/libs.versions.toml           # 新增 slf4j = "2.0.16" 版本 + slf4j-nop 库声明
+```
+
+### 2. known_hosts 路径修复
+
+Android 的 `System.getProperty("user.home")` 返回 `/`，导致 `known_hosts` 尝试创建到 `/.windplayer/` 失败。
+
+#### KnownHostsManager 新增 `initialize(baseDir)` 方法
+- Desktop 保持 `~/.windplayer/known_hosts` 不变
+- Android 在 `MainActivity.onCreate` 中调用 `KnownHostsManager.initialize(File(filesDir, ".windplayer"))`
+- 使用 `@Synchronized` 保证线程安全，必须在首次访问 `verifier` 之前调用
+
+```
+修改：
+  core-vfs/src/jvmShared/.../KnownHostsManager.kt  # 新增 initialize() + customBaseDir
+  app-android/.../MainActivity.kt                   # onCreate 中调用 initialize()
+```
+
+### 3. SSHJ BouncyCastle 算法修复（X25519 + SHA-256）
+
+Android 内置 BC provider 缺少 X25519 key agreement 和 SHA-256 MessageDigest，SSHJ 默认向 BC 请求这些算法导致连接失败。
+
+#### 方案：禁用 BC，改用 Android Conscrypt
+
+新增 `SshjCompat.kt`（jvmShared）：
+- `initializeSshj()`：在 Android 上调用 `SecurityUtils.setRegisterBouncyCastle(false)`，让 SSHJ 回退到系统 Conscrypt provider
+- `isAndroidRuntime()`：通过 `Class.forName("android.os.Build")` 检测运行时，可在 jvmShared 中安全使用
+- `createSshjConfig()`：构建 SSHJ `DefaultConfig`，Android 上额外过滤掉 `curve25519-sha256` KEX 工厂（兜底，防止旧版 Conscrypt 不支持）
+
+`MainActivity.onCreate` 最开头调用 `initializeSshj()`，必须在任何 SSHJ 类触发 `SecurityUtils` 静态初始化之前执行。
+
+```
+新增：
+  core-vfs/src/jvmShared/.../SshjCompat.kt          # initializeSshj() + isAndroidRuntime() + createSshjConfig()
+
+修改：
+  core-vfs/src/jvmShared/.../SftpClient.kt          # SSHClient() → SSHClient(createSshjConfig())
+  core-vfs/src/desktopMain/.../StreamProxy.kt        # SSHClient() → SSHClient(createSshjConfig())
+  app-android/.../MainActivity.kt                    # onCreate 调用 initializeSshj()
+```
+
+### 4. Android 版 StreamProxy（SFTP HTTP 代理）
+
+mpv Android 构建不包含 SFTP/SSH 协议支持，直接传 `sftp://` URL 会报 `No protocol handler found`。需要像桌面端一样用本地 HTTP 代理转发。
+
+Android 没有 `com.sun.net.httpserver.HttpServer`，因此用 `java.net.ServerSocket` 手写最小 HTTP/1.1 服务器。
+
+#### 核心设计
+- `ServerSocket(0, 50, 127.0.0.1)` 绑定随机端口
+- 接受线程 + CachedThreadPool 处理请求
+- 解析 HTTP 请求行 + 头部（大小写不敏感）
+- 支持 `GET` / `HEAD` / `Range: bytes=start-end`
+- `StreamSession`：每视频独立 SSHJ 连接，`open/read/close` 全部 `@Synchronized`
+- 复用 `createSshjConfig()` + `KnownHostsManager.verifier`，与 SftpClient 安全策略一致
+- 会话 ID 使用完整 UUID（122 位熵，与桌面端一致）
+
+#### MobilePlayerScreen 集成
+- 每个播放页持有 `StreamProxy` 实例（`remember`）
+- `resolveAndLoad`：当 `protocol == SFTP` 时，`streamProxy.createStreamUrl(serverConfig, path)` 生成 `http://127.0.0.1:PORT/stream/UUID`
+- 切集/重载时关闭上一个 SFTP 会话
+- `onDispose` 关闭所有会话并 `streamProxy.stop()`
+
+```
+新增：
+  core-vfs/src/androidMain/.../StreamProxy.kt        # Android 版 HTTP 代理（ServerSocket）
+
+修改：
+  app-android/.../MobilePlayerScreen.kt              # SFTP 走 StreamProxy URL
+```
+
+### 编译验证
+
+```
+✅ :app-android:compileDebugKotlin   BUILD SUCCESSFUL
+✅ :app-desktop:compileKotlinDesktop BUILD SUCCESSFUL
+✅ :core-vfs:desktopTest             BUILD SUCCESSFUL (66 tests)
+```
+
+---
+
+## 阶段四十八：Android 播放优化与 UX 改进 (已完成)
+
+### 1. StreamProxy 缓冲优化（缓解跳转卡顿）
+
+| 优化项 | 之前 | 之后 |
+|--------|------|------|
+| 读写缓冲 | 64KB | 1MB（桌面端同步） |
+| ServerSocket backlog | 8 | 50 |
+| mpv 网络缓存 | 未设置 | `cache=yes`, `demuxer-max-bytes=500M`, `demuxer-max-back-bytes=150M` |
+
+网络流（SFTP）自动设大缓存让跳转命中本地缓冲区，本地文件恢复小缓存（150M/75M）。
+
+### 2. 外挂字幕后台下载（不阻塞起播）
+
+Android 端之前完全不支持外挂字幕匹配，现在复用 commonMain 的 `matchExternalTracks()`。
+
+#### 流程
+1. `resolveAndLoad` 先发 `loadfile`（视频立即开始加载）
+2. 后台协程列目录 → `matchExternalTracks` → 过滤 SUBTITLE 类型
+3. `MobileVfsManager.downloadAuxFile()` 下载到 `context.cacheDir`（文件名消毒防路径穿越）
+4. `tryAddSubtitles()` 同时监听 `FileLoaded` 事件和下载完成，两者都满足后 `sub-add`
+
+#### MobileVfsManager 新增 `downloadAuxFile()`
+- 独立短连接下载，不干扰 StreamProxy 主视频会话
+- `sanitizeCacheName()`：`[^A-Za-z0-9._-]` → `_`，取 `File(name).name` 防路径穿越
+- 已存在文件跳过下载（缓存命中）
+
+### 3. 选轨 UI 卡死修复
+
+#### 问题
+`TrackSelectionContent` 在主线程同步调用 `player.getPropertyString()`，mpv 忙时 JNI 阻塞 → UI 冻结。点击选轨后的 `player.setProperty()` 同样阻塞。
+
+#### 修复
+- 轨道列表读取移到 `LaunchedEffect(tabIndex)` + `Dispatchers.IO`
+- 点击选轨后**立即关闭底部面板**（`onDismiss()`），在 `Dispatchers.IO` 协程中执行 `setProperty`
+- Off / Video / Audio / Subtitle 全部走异步路径
+
+### 4. 导航修复
+
+#### 播放器返回目标修复
+之前 `onFilePlay` 中 `activeServer = null` 导致播放器返回后跳过 `ServerBrowseScreen` 直接到主界面。移除该行后，播放器返回 → `pendingFile = null` → `when` 命中 `activeServer != null` → 回到服务器文件列表（目录和文件列表保留，不重新加载）。
+
+#### 本地文件夹返回键逐级退回
+`FileBrowserScreen` 缺少 `BackHandler`，系统返回键直接退出 App。新增 `BackHandler(enabled = dirStack.size > 1)`，子目录时退回上一级，根目录时交给系统处理。
+
+### 5. 播放器双击确认退出
+
+播放界面 `BackHandler` 改为双击确认：
+- 第一次按返回 → Toast `"Press back again to exit playback"`，2 秒内再按才退出
+- 超时自动重置
+
+### 6. 手势系统全面重写
+
+#### 之前的问题
+- 亮度和音量用 `dy * 0.5`（原始像素），轻划 200px 就跳 100，极难控制
+- 只用 mpv 内部 volume（0-100），与系统音量不一致
+- 亮度用 -100..100 映射到 0.05..1.0 的自定义标准，不直观
+- 无水平滑动快进功能
+
+#### 手势方向判定
+首次显著移动（>24px）时锁定方向：
+- **水平 > 垂直** → 水平快进模式
+- **垂直 > 水平** → 根据起点位置：左半屏=亮度，右半屏=音量
+
+#### 灵敏度
+改为屏幕比例映射：`dy / size.height * maxRange`
+- 整屏高度滑动 = 全范围变化
+- 2000px 屏幕，200px 滑动只调 10%
+
+#### 系统音量（AudioManager）
+- 不再操作 mpv `volume` 属性
+- `AudioManager.setStreamVolume(STREAM_MUSIC, ...)` 直接控制系统媒体音量
+- OSD 显示 `Vol: 7/15`（当前/最大）
+
+#### 系统亮度（Settings.System + WRITE_SETTINGS）
+- Manifest 新增 `WRITE_SETTINGS` 权限
+- 有权限：直接写 `SCREEN_BRIGHTNESS`（0-255），同时设窗口亮度保证即时生效
+- 无权限：回退到窗口亮度
+- 进入播放器时保存原始系统亮度，退出时恢复
+- `ON_RESUME` 刷新权限状态（用户可能从系统设置授权返回）
+
+#### 水平滑动快进（±30s）
+- 满屏宽度 = ±60s 范围，`coerceIn(-30, 30)` 上限 30s
+- 向右滑 = 前进，向左滑 = 后退
+- OSD 显示 `+20s → 01:23 / 24:00`
+
+### 文件变更
+
+```
+新增：
+  core-vfs/src/androidMain/kotlin/dev/windplayer/vfs/StreamProxy.kt
+
+修改：
+  core-vfs/build.gradle.kts                                      # slf4j-nop 移到 jvmShared
+  gradle/libs.versions.toml                                      # 新增 slf4j 版本
+  core-vfs/src/jvmShared/.../KnownHostsManager.kt                # initialize() + customBaseDir
+  core-vfs/src/jvmShared/.../SftpClient.kt                       # createSshjConfig()
+  core-vfs/src/jvmShared/.../SshjCompat.kt                       # [NEW] BC 禁用 + KEX 过滤
+  core-vfs/src/desktopMain/.../StreamProxy.kt                    # 缓冲 64KB → 1MB
+  app-android/src/main/AndroidManifest.xml                       # WRITE_SETTINGS 权限
+  app-android/.../MainActivity.kt                                # initializeSshj() + KnownHostsManager.initialize()
+  app-android/.../MobileVfsManager.kt                            # downloadAuxFile()
+  app-android/.../MobilePlayerScreen.kt                          # 手势/音量/亮度/字幕/选轨/导航/双击退出 全面重写
+  app-android/.../FileBrowserScreen.kt                           # BackHandler 逐级退回
+  app-android/.../MobileApp.kt                                   # 移除 activeServer = null
+```
+
+### 编译验证
+
+```
+✅ :app-android:compileDebugKotlin   BUILD SUCCESSFUL
+✅ :app-desktop:compileKotlinDesktop BUILD SUCCESSFUL
+✅ :core-vfs:desktopTest             BUILD SUCCESSFUL (66 tests)
+```

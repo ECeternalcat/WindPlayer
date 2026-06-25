@@ -33,6 +33,12 @@ class WebdavClient : VfsClient {
             baseUrl = "$scheme://${config.bareHost}:${config.defaultPort()}"
             httpClient = HttpClient(CIO) {
                 expectSuccess = false
+                // H18: don't follow redirects. A malicious / compromised WebDAV
+                // server can return `302 Location: http://attacker/` to capture
+                // our Basic `Authorization` header (Ktor would otherwise re-send
+                // it to the redirect target). WebDAV PROPFIND/GET responses are
+                // not expected to redirect in normal operation.
+                followRedirects = false
             }
             LOG.info("configured for $baseUrl")
             true
@@ -106,6 +112,18 @@ class WebdavClient : VfsClient {
         LOG.info("downloaded $remotePath -> $localPath")
     }
 
+    override suspend fun deleteFile(remotePath: String): Boolean {
+        return false
+    }
+
+    override suspend fun renameFile(oldPath: String, newPath: String): Boolean {
+        return false
+    }
+
+    override suspend fun moveFile(oldPath: String, newPath: String): Boolean {
+        return false
+    }
+
     override fun isConnected(): Boolean = httpClient != null
 
     private fun normalizePath(path: String): String {
@@ -121,7 +139,19 @@ class WebdavClient : VfsClient {
     private fun parsePropfindResponse(xml: String, requestPath: String): List<FileNode> {
         val basePathNoSlash = normalizePath(requestPath).trimEnd('/')
         return try {
-            val factory = DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
+            // C6: XXE hardening. The WebDAV response is untrusted (server may be
+            // malicious or compromised). Without these features disabled, a
+            // payload like <!DOCTYPE foo [<!ENTITY x SYSTEM "file:///etc/passwd">]>
+            // could exfiltrate local files, perform SSRF, or trigger DoS via
+            // billion-laughs / quadratic blowup.
+            val factory = DocumentBuilderFactory.newInstance().apply {
+                isNamespaceAware = true
+                setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+                setFeature("http://xml.org/sax/features/external-general-entities", false)
+                setFeature("http://xml.org/sax/features/external-parameter-entities", false)
+                setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false)
+                isExpandEntityReferences = false
+            }
             val doc = factory.newDocumentBuilder().parse(ByteArrayInputStream(xml.toByteArray()))
 
             val responses = doc.getElementsByTagNameNS("DAV:", "response")

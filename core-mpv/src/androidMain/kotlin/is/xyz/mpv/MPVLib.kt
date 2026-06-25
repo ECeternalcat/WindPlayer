@@ -37,18 +37,25 @@ object MPVLib {
     @JvmStatic
     fun removeObserver(o: EventObserver) { synchronized(observers) { observers.remove(o) } }
 
-    @JvmStatic fun eventProperty(property: String, value: Long) { synchronized(observers) { for (o in observers) o.eventProperty(property, value) } }
-    @JvmStatic fun eventProperty(property: String, value: Boolean) { synchronized(observers) { for (o in observers) o.eventProperty(property, value) } }
-    @JvmStatic fun eventProperty(property: String, value: Double) { synchronized(observers) { for (o in observers) o.eventProperty(property, value) } }
-    @JvmStatic fun eventProperty(property: String, value: String) { synchronized(observers) { for (o in observers) o.eventProperty(property, value) } }
-    @JvmStatic fun eventProperty(property: String) { synchronized(observers) { for (o in observers) o.eventProperty(property) } }
-    @JvmStatic fun event(eventId: Int) { synchronized(observers) { for (o in observers) o.event(eventId) } }
+    // Snapshot under the lock, dispatch outside. Holding the monitor while
+    // calling an observer would deadlock if the observer re-enters MPVLib
+    // (e.g. MpvPlayer.inferEndFileReason -> getPropertyString) while another
+    // thread holds an internal libplayer lock and waits on `observers`.
+    @JvmStatic fun eventProperty(property: String, value: Long) { for (o in snapshot()) o.eventProperty(property, value) }
+    @JvmStatic fun eventProperty(property: String, value: Boolean) { for (o in snapshot()) o.eventProperty(property, value) }
+    @JvmStatic fun eventProperty(property: String, value: Double) { for (o in snapshot()) o.eventProperty(property, value) }
+    @JvmStatic fun eventProperty(property: String, value: String) { for (o in snapshot()) o.eventProperty(property, value) }
+    @JvmStatic fun eventProperty(property: String) { for (o in snapshot()) o.eventProperty(property) }
+    @JvmStatic fun event(eventId: Int) { for (o in snapshot()) o.event(eventId) }
+
+    private fun snapshot(): List<EventObserver> = synchronized(observers) { observers.toList() }
 
     private val log_observers = mutableListOf<LogObserver>()
     @JvmStatic fun addLogObserver(o: LogObserver) { synchronized(log_observers) { log_observers.add(o) } }
     @JvmStatic fun removeLogObserver(o: LogObserver) { synchronized(log_observers) { log_observers.remove(o) } }
     @JvmStatic fun logMessage(prefix: String, level: Int, text: String) {
-        synchronized(log_observers) { for (o in log_observers) o.logMessage(prefix, level, text) }
+        val snap = synchronized(log_observers) { log_observers.toList() }
+        for (o in snap) o.logMessage(prefix, level, text)
     }
 
     interface EventObserver {

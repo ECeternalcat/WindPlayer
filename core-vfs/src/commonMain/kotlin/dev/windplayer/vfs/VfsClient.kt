@@ -7,6 +7,9 @@ interface VfsClient {
     suspend fun listDirectory(path: String): List<FileNode>
     suspend fun resolveUrl(path: String): String
     suspend fun downloadFile(remotePath: String, localPath: String)
+    suspend fun deleteFile(remotePath: String): Boolean
+    suspend fun renameFile(oldPath: String, newPath: String): Boolean
+    suspend fun moveFile(oldPath: String, newPath: String): Boolean
     fun isConnected(): Boolean
 }
 

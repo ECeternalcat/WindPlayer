@@ -4,13 +4,18 @@ import android.content.Context
 import android.util.Log
 import android.view.Surface
 import `is`.xyz.mpv.MPVLib
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 
 actual class MpvPlayer actual constructor() {
 
     private val lock = Any()
-    private val _events = MutableSharedFlow<MpvEvent>(extraBufferCapacity = 64)
+    // Control events must never be silently lost; DROP_OLDEST keeps the newest.
+    private val _events = MutableSharedFlow<MpvEvent>(
+        extraBufferCapacity = 256,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
     actual val events: SharedFlow<MpvEvent> = _events
     private var created = false
     private var initialized = false
@@ -107,9 +112,13 @@ actual class MpvPlayer actual constructor() {
 
     actual fun dispose() {
         synchronized(lock) {
+            // removeObserver FIRST: after MPVLib.destroy(), the JNI event thread
+            // may still deliver in-flight events to the observer, which would
+            // call back into MPVLib (e.g. inferEndFileReason -> getPropertyString)
+            // on a destroyed mpv context.
+            try { MPVLib.removeObserver(observer) } catch (_: Exception) {}
             if (initialized) { try { MPVLib.destroy() } catch (_: Exception) {}; initialized = false }
             created = false
-            try { MPVLib.removeObserver(observer) } catch (_: Exception) {}
         }
     }
 

@@ -102,3 +102,28 @@ fun buildUrlWithCredentials(
     val cleanPath = if (path.startsWith("/")) path.removePrefix("/") else path
     return "$scheme://$userInfo$portPart/$cleanPath"
 }
+
+// ------------------------------------------------------------------
+// URL redaction for logging
+// ------------------------------------------------------------------
+
+/**
+ * Strip `userinfo@` from a URL so it can be safely written to logs.
+ *
+ * Example: `webdav://user:pass@host/path` -> `webdav://host/path`.
+ *
+ * Use this whenever a stream/playback URL is logged. StreamProxy URLs
+ * (`http://127.0.0.1:port/stream/<id>`) contain no credentials and pass
+ * through unchanged.
+ */
+fun redactUrl(url: String): String {
+    val schemeEnd = url.indexOf("://")
+    if (schemeEnd < 0) return url
+    val afterScheme = schemeEnd + 3
+    val hostStart = url.indexOf('@', afterScheme)
+    return if (hostStart >= 0 && hostStart < url.indexOf('/', afterScheme).let { if (it < 0) url.length else it }) {
+        url.substring(0, afterScheme) + url.substring(hostStart + 1)
+    } else {
+        url
+    }
+}

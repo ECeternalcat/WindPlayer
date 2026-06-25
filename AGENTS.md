@@ -46,7 +46,7 @@ All commands run from the repo root via `./gradlew` (or `.\gradlew.bat` on Windo
 ### Tests
 
 ```bash
-# Desktop JVM tests (currently TrackMatcher unit tests in core-vfs)
+# Desktop JVM tests in core-vfs (TrackMatcher, ServerConfig, VfsUtils, CryptoUtil)
 ./gradlew :core-vfs:desktopTest --no-daemon
 
 # All tests across all targets
@@ -82,9 +82,19 @@ Two GitHub Actions workflows exist:
   JDK 17 also works for Android builds (per `app-android/build.gradle.kts`
   `compileOptions`).
 
-- **`PromiscuousVerifier`** is intentionally used only as a fallback in
-  `KnownHostsManager.kt` when the known_hosts file can't be opened. All SSH
-  connections should go through `KnownHostsManager.verifier` (TOFU).
+- **`KnownHostsManager`** fails closed. SSH connections use TOFU
+  (`TofuHostKeyVerifier`) backed by `~/.windplayer/known_hosts`. If the
+  known_hosts file can't be opened/parsed, the manager returns a
+  `RejectAllHostKeyVerifier` that refuses *every* host key — connections
+  fail loudly rather than silently downgrading to MITM-vulnerable mode.
+  The known_hosts file is created with `0600` permissions. **Do not**
+  reintroduce `PromiscuousVerifier` as a fallback.
+
+- **mpv cross-thread access** is serialized by an internal `lock` on both
+  Android (`MpvPlayer.android`) and Desktop (`MpvPlayer.desktop`). Don't
+  add `synchronized(player)` blocks outside the player — they only cause
+  lock-ordering hazards (see `MpvRenderView` H7 from the 2026-06-23 audit).
+  The event-loop thread is joined in `dispose()` before `mpv_terminate_destroy`.
 
 - **Android EndFile reason** is inferred via `eof-reached` property query
   (see `MpvPlayer.android.kt::inferEndFileReason`) because `libplayer.so`'s

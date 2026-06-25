@@ -28,7 +28,10 @@ class StreamProxy {
 
     @Synchronized
     fun createStreamUrl(config: ServerConfig, filePath: String): String {
-        val id = UUID.randomUUID().toString().take(8)
+        // H17: full UUID = 122 bits of entropy. The session id is the ONLY
+        // authentication for the local HTTP endpoint, so the previously-used
+        // `take(8)` (32 bits) was brute-forceable by any local process.
+        val id = UUID.randomUUID().toString()
         val normalized = filePath.replace(Regex("/+"), "/")
         sessions[id] = StreamSession(config, normalized)
         return "http://127.0.0.1:$port/stream/$id"
@@ -103,7 +106,7 @@ class StreamProxy {
                 LOG.info("200 $contentLength bytes")
             }
 
-            val buf = ByteArray(64 * 1024)
+            val buf = ByteArray(1024 * 1024)
             var offset = start
             var totalSent = 0L
             val out = exchange.responseBody
@@ -148,7 +151,7 @@ class StreamProxy {
         @Synchronized
         fun open(): Long {
             if (remoteFile != null) return fileSize
-            val client = SSHClient()
+            val client = SSHClient(createSshjConfig())
             client.addHostKeyVerifier(KnownHostsManager.verifier)
             client.connect(config.bareHost, config.defaultPort())
             client.authPassword(config.username, config.password)
@@ -168,6 +171,10 @@ class StreamProxy {
             return file.read(offset, buf, 0, len)
         }
 
+        // Must be @Synchronized to race against in-flight open()/read() calls.
+        // Without it, close() can null out remoteFile/sftp/ssh while a handler
+        // thread is inside read() -> use-after-free / IllegalStateException.
+        @Synchronized
         fun close() {
             try { remoteFile?.close() } catch (_: Exception) {}
             try { sftp?.close() } catch (_: Exception) {}

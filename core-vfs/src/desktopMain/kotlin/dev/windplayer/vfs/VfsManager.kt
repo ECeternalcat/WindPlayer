@@ -1,5 +1,7 @@
 package dev.windplayer.vfs
 
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.logging.Logger
 
 import kotlinx.coroutines.CoroutineScope
@@ -17,8 +19,11 @@ private val LOG = Logger.getLogger("dev.windplayer.vfs.VfsManager")
 
 class VfsManager {
 
-    private val clients = mutableMapOf<String, VfsClient>()
-    private val _servers = mutableListOf<ServerConfig>()
+    // H5: Accessible from Compose UI thread, IO dispatcher, and shutdown hook.
+    // Both must be thread-safe; CopyOnWriteArrayList gives us stable iteration
+    // for `servers` getter and saveConfig's forEachIndexed without explicit locks.
+    private val clients = ConcurrentHashMap<String, VfsClient>()
+    private val _servers = CopyOnWriteArrayList<ServerConfig>()
     val servers: List<ServerConfig> get() = _servers.toList()
 
     private val localClient = LocalClient()
@@ -169,7 +174,7 @@ class VfsManager {
                 "demuxer-max-back-bytes" to "100M"
             ) else emptyMap()
 
-            LOG.info("playback stream: $streamUrl (sessions: $sessionIds)")
+            LOG.info("playback stream: ${redactUrl(streamUrl)} (sessions: $sessionIds)")
             Result.success(PlaybackParams(
                 streamUrl = streamUrl,
                 subtitleFiles = subtitleFiles,
@@ -208,7 +213,12 @@ class VfsManager {
 
     private suspend fun downloadSubtitle(client: VfsClient, file: FileNode): String? {
         return try {
-            val localFile = File(cacheDir, file.name)
+            // A-M18: sanitize the remote filename before joining with cacheDir.
+            // A malicious server could return `../../sensitive` and we'd write
+            // outside cacheDir. Keep it conservative: [A-Za-z0-9._-] only,
+            // preserving the extension. Prefix with the file size to disambiguate.
+            val safeName = sanitizeCacheName(file.name)
+            val localFile = File(cacheDir, safeName)
             if (!localFile.exists()) {
                 client.downloadFile(file.path, localFile.absolutePath)
             }
@@ -217,6 +227,19 @@ class VfsManager {
             LOG.warning("subtitle download failed: ${e.message}")
             null
         }
+    }
+
+    /**
+     * Reduce an untrusted remote filename to a safe single-component cache name.
+     * Strips path separators, `..`, and any character outside [A-Za-z0-9._-].
+     * Falls back to a hash of the input if nothing usable remains.
+     */
+    private fun sanitizeCacheName(name: String): String {
+        val cleaned = name.replace(Regex("[^A-Za-z0-9._-]"), "_")
+            .removePrefix("..").removeSuffix("..")
+        val safe = cleaned.ifBlank { "subtitle_${name.hashCode().toString(16)}" }
+        // Final guard: ensure the result is a single path component.
+        return File(safe).name
     }
 
     suspend fun prepareLocalPlayback(videoNode: FileNode): PlaybackParams {
@@ -252,17 +275,18 @@ class VfsManager {
         try {
             val props = Properties()
             props.setProperty("server.count", _servers.size.toString())
-            _servers.forEachIndexed { index, server ->
-                props.setProperty("server.$index.id", server.id)
-                props.setProperty("server.$index.name", server.name)
-                props.setProperty("server.$index.protocol", server.protocol.name)
-                props.setProperty("server.$index.host", server.host)
-                props.setProperty("server.$index.port", server.port.toString())
-                props.setProperty("server.$index.username", server.username)
-                // Encrypt password at rest via DPAPI (Windows) / labelled plaintext (other).
-                props.setProperty("server.$index.password", CryptoUtil.encrypt(server.password))
-                props.setProperty("server.$index.basePath", server.basePath)
-            }
+                _servers.forEachIndexed { index, server ->
+                    props.setProperty("server.$index.id", server.id)
+                    props.setProperty("server.$index.name", server.name)
+                    props.setProperty("server.$index.protocol", server.protocol.name)
+                    props.setProperty("server.$index.host", server.host)
+                    props.setProperty("server.$index.port", server.port.toString())
+                    props.setProperty("server.$index.username", server.username)
+                    // Encrypt password at rest via DPAPI (Windows) / labelled plaintext (other).
+                    props.setProperty("server.$index.password", CryptoUtil.encrypt(server.password))
+                    props.setProperty("server.$index.basePath", server.basePath)
+                    props.setProperty("server.$index.useTls", server.useTls.toString())
+                }
             FileOutputStream(configFile).use { props.store(it, "WindPlayer Server Configurations") }
         } catch (e: Exception) {
             LOG.warning("saveConfig failed: ${e.message}")
@@ -291,7 +315,8 @@ class VfsManager {
                 // Decrypt password (transparently handles dpapi:/plain:/legacy plaintext).
                 val password = CryptoUtil.decrypt(props.getProperty("server.$i.password", ""))
                 val basePath = props.getProperty("server.$i.basePath", "/")
-                _servers.add(ServerConfig(id, name, protocol, host, port, username, password, basePath))
+                val useTls = props.getProperty("server.$i.useTls", "false").equals("true", ignoreCase = true)
+                _servers.add(ServerConfig(id, name, protocol, host, port, username, password, basePath, useTls))
             }
             LOG.info("loaded ${_servers.size} server(s)")
         } catch (e: Exception) {

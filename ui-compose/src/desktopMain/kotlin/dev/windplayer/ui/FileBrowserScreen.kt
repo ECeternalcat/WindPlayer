@@ -625,8 +625,9 @@ fun FileBrowserScreen(
                 }
             } else {
                 val displayFiles = remember(files, sortBy, sortAsc, searchQuery) {
-                    val filtered = if (searchQuery.isBlank()) files
-                        else files.filter { it.name.contains(searchQuery, ignoreCase = true) }
+                    val mediaOnly = files.filter { it.isDirectory || it.isVideo() || it.isSubtitle() }
+                    val filtered = if (searchQuery.isBlank()) mediaOnly
+                        else mediaOnly.filter { it.name.contains(searchQuery, ignoreCase = true) }
                     val dirs = filtered.filter { it.isDirectory }
                     val fileItems = filtered.filter { !it.isDirectory }
                     val comparator: Comparator<FileNode> = when (sortBy) {

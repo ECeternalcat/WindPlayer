@@ -32,7 +32,17 @@ import javax.swing.JPanel
 import javax.swing.SwingUtilities
 import javax.swing.TransferHandler
 
-fun main() {
+fun main(args: Array<String>) {
+    // --register: register video file associations in Windows registry.
+    if (args.any { it == "--register" } && System.getProperty("os.name").lowercase().contains("windows")) {
+        registerVideoExtensions()
+        println("Video file extensions registered. You can now open video files with WindPlayer.")
+        return
+    }
+
+    // If a video file path was passed as an argument, queue it for opening.
+    val initialFile = args.firstOrNull { File(it).exists() && File(it).isFile }
+
     val player = MpvPlayer()
     val vfsManager = VfsManager()
     val osdEvents = MutableSharedFlow<String>(extraBufferCapacity = 8)
@@ -168,9 +178,15 @@ fun main() {
             }
 
             override fun windowClosing(e: WindowEvent?) {
-                saveWindowState(frame)
-                vfsManager.shutdown()
-                player.dispose()
+                // try/finally: any exception in saveWindowState/shutdown must
+                // not skip player.dispose() (would leak the mpv context + JNI
+                // memory + event thread).
+                try {
+                    saveWindowState(frame)
+                    vfsManager.shutdown()
+                } finally {
+                    player.dispose()
+                }
             }
         })
 
@@ -229,7 +245,56 @@ fun main() {
         }
 
         frame.isVisible = true
+
+        // Open file passed via command line (e.g. double-click in explorer).
+        if (initialFile != null) {
+            dropEvents.tryEmit(initialFile)
+        }
+
+        // No Thread.currentThread().join() — self-join throws IllegalArgumentException
+        // and the non-daemon Swing EDT keeps the JVM alive on its own.
+    }
+}
+
+/**
+ * Register common video file extensions to "Open With" WindPlayer on Windows
+ * by writing to HKEY_CURRENT_USER\Software\Classes.
+ */
+private fun registerVideoExtensions() {
+    val appPath = System.getProperty("java.class.path")
+        .split(java.io.File.pathSeparator).firstOrNull()
+        ?.let { java.io.File(it).absolutePath }
+        ?: return
+
+    // For a packaged app, the executable is the launcher; for dev, it's the jar.
+    // We register the java command that launches the app.
+    val exePath = if (appPath.endsWith(".jar")) {
+        "javaw -jar \"$appPath\" \"%1\""
+    } else {
+        "\"$appPath\" \"%1\""
     }
 
-    Thread.currentThread().join()
+    val extensions = VIDEO_EXTENSIONS
+    val keyRoot = "HKCU\\Software\\Classes"
+    val appName = "WindPlayer"
+
+    fun regAdd(key: String, value: String) {
+        val cmd = arrayOf("reg", "add", key, "/ve", "/d", value, "/f")
+        Runtime.getRuntime().exec(cmd).waitFor()
+    }
+    fun regAddVal(key: String, name: String, value: String) {
+        val cmd = arrayOf("reg", "add", key, "/v", name, "/d", value, "/f")
+        Runtime.getRuntime().exec(cmd).waitFor()
+    }
+
+    // Register the application ProgID
+    regAdd("$keyRoot\\$appName\\shell\\open\\command", exePath)
+    regAdd("$keyRoot\\$appName", "WindPlayer Video")
+
+    // Associate each extension
+    for (ext in extensions) {
+        val extKey = "$keyRoot\\.$ext"
+        regAddVal(extKey, "PerceivedType", "video")
+        regAdd("$extKey\\OpenWithProgids", appName)
+    }
 }

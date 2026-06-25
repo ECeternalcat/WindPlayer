@@ -8,7 +8,16 @@ data class ServerConfig(
     val port: Int = 0,
     val username: String = "",
     val password: String = "",
-    val basePath: String = "/"
+    val basePath: String = "/",
+    /**
+     * H18: For FTP, enables FTPS (FTP over TLS). Has no effect for SFTP
+     * (already encrypted) or WebDAV (TLS inferred from the `https://` host
+     * prefix — see [httpScheme]).
+     *
+     * Default is `false` for backward compatibility with existing config files;
+     * the AddServer UI sets it to `true` for new FTP servers (prefer security).
+     */
+    val useTls: Boolean = false
 ) {
     /**
      * The bare hostname with any `http://` / `https://` scheme prefix stripped.

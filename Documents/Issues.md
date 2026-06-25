@@ -1,6 +1,8 @@
 ﻿# WindPlayer 已知问题清单
 
 来源：代码审查（2026-06-22），按严重程度分级，含状态追踪。
+第二轮深度审查（2026-06-23）的结果记录在 `Documents/Audit-2026-06-23.md`，
+本文件末尾「2026-06-23 第二轮修复」一节汇总了实际落地的修复。
 
 状态约定：`[ ]` 未处理 / `[~]` 进行中 / `[x]` 已修复 / `[!]` 暂不处理
 
@@ -147,3 +149,62 @@
 **第四批（架构整理）**：P0-3、A4、A5、A6
 **第五批（复杂修复）**：P0-2、P1-2、P0-4、A1、A2、A7
 **第六批（安全 & 文档）**：P1-5、P1-6、D1、D2、D3
+
+---
+
+## 六、2026-06-23 第二轮修复（深度审计）
+
+来源：`Documents/Audit-2026-06-23.md`。本轮共发现 50+ 个新问题（P0/P1/M/L）。
+按优先级分 4 波修复，每波后均通过 `:app-desktop:compileKotlinDesktop` +
+`:app-android:compileDebugKotlin` + `:core-vfs:allTests`（66 tests, 0 failures）验证。
+
+### 第一波：one-liner 高 ROI（已全部修复）
+- **A-2026-C1** 桌面端 `MpvPlayer` 加 `lock` + 所有 mpv 调用 `synchronized(lock)`，与 Android 端对齐
+- **A-2026-C2** `handle`/`running` 加 `@Volatile`（防止事件线程读不到 dispose 写）
+- **A-2026-C3** `dispose()` 先 `eventThread.join(2000)` 再 `mpv_terminate_destroy`（防 UAF）
+- **A-2026-C4** `MPVLib.event/eventProperty` 改为「锁内 toList → 锁外 dispatch」，消除 `inferEndFileReason` 再入 JNI 的死锁风险
+- **A-2026-C5** `StreamProxy.StreamSession.close()` 加 `@Synchronized`，与 `open/read` 同锁
+- **A-2026-H1** 删除 `Main.kt:234` 的 `Thread.currentThread().join()`（自 join 抛 IAE）
+- **A-2026-H3** `DesktopShortcutContext.skipNextCallback` 加 `@Volatile`
+- **A-2026-H4** `_events` SharedFlow 改 `extraBufferCapacity=256 + DROP_OLDEST`，避免 FileLoaded/EndFile 被静默丢弃
+- **A-2026-M3** `startEventLoop` 加幂等守卫，防二次 `initialize()` 孤立线程
+- **A-2026-M4** Android `dispose()` 顺序：先 `removeObserver` 后 `destroy`
+- **A-2026-L1** 删除 `MpvRenderView.kt` 死的 `import runBlocking`
+
+### 第二波：锁 & 资源生命周期（已全部修复）
+- **A-2026-H2** `LayoutManager` 所有公共方法包 `onEdt { }`（EDT 上 inline 零开销，非 EDT 时 `invokeAndWait`）；`applyLayout` 保留内部 `invokeLater` 防重入
+- **A-2026-H5** `VfsManager.clients`→`ConcurrentHashMap`，`_servers`→`CopyOnWriteArrayList`
+- **A-2026-H6** `MpvRenderView.surfaceCreated` 加 `AtomicBoolean surfaceValid`，在 IO 协程 await 前后检查
+- **A-2026-H7** 删除 `MpvRenderView` 的 `synchronized(player)` 外层锁；改用专用 `surfaceLock` 只保护 pfd 字段
+- **A-2026-H11** `AndroidView(onRelease = { it.release() })` 在 MobilePlayerScreen 退出时取消 SupervisorJob + 注销 SurfaceHolder.Callback
+- **A-2026-H12** PFD 双开泄漏 — `MpvRenderView` 不再自己开 pfd，改用 `onSurfaceReady` 回调；`MobilePlayerScreen.resolveAndLoad` 成为 pfd 的唯一所有者（初始加载和自动播放下一首都走它）
+- **A-2026-H13** `MobilePlayerScreen.resolveAndLoad` 体改 `withContext(Dispatchers.IO)`，避免 PFD/SSH 在主线程
+- **A-2026-H14** `MobileApp.onBack` 和 `DisposableEffect.onDispose` 的 `player.dispose()` 改 `scope.launch(Dispatchers.IO)`
+- **A-2026-H15** `ServerStore.prefs()` 用 `@Volatile cachedPrefs + cacheLock` 双检锁，避免每次操作重建 MasterKey；改用 `applicationContext`
+
+### 第三波：安全 fail-closed（已全部修复）
+- **A-2026-C6** `WebdavClient.parsePropfindResponse` 禁用 DOCTYPE / 外部实体 / 外部 DTD / 扩展实体（XXE 加固）
+- **A-2026-H8** `VfsUtils.redactUrl()` 助手，剥 `userinfo@`；`VfsManager` 日志改用 redact
+- **A-2026-H9** `KnownHostsManager` 失败分支改为 `RejectAllHostKeyVerifier`（恒 false），不再降级到 `PromiscuousVerifier`；新增 0600 权限设置
+- **A-2026-H10** `ServerStore` 明文 fallback 改用独立文件名 `windplayer_servers_plain`，避免后续 crypto 恢复时读取格式错误
+- **A-2026-H17** `StreamProxy.createStreamUrl` 用完整 UUID（122 位）替代 `take(8)`（32 位）
+- **A-2026-H18** FTP FTPS 支持 — `FtpClient` 当 `useTls=true` 用 `FTPSClient`+`PROT P`；`WebdavClient` 设 `followRedirects=false` 防 `Authorization` 头泄漏；两端 AddServer UI 新增 TLS Switch（默认 ON）和 cleartext 警告；`useTls` 持久化到 desktop/Android 配置
+- **A-2026-M13** `MobilePlayerScreen.screenshot` 加 `<flags>` 参数 `"subtitles"`
+- **A-2026-M18** `VfsManager.downloadSubtitle` 用 `sanitizeCacheName` 白名单字符，防 `../../` 路径穿越
+- **Manifest** `android:allowBackup="false"`（防 `adb backup` 导出加密 prefs）
+- **M2** `Main.windowClosing` 改 try/finally，异常时仍执行 `player.dispose()`
+
+### 第四波：文档同步
+- **AGENTS.md**：PromiscuousVerifier 一节改写为「fail-closed + RejectAllHostKeyVerifier」；测试章节列出 4 个测试文件；新增「mpv cross-thread access」一节记录内部 lock 不变量
+- **Audit-2026-06-23.md**：本审计报告，含 50+ 问题分级与修复进度
+
+### 暂未修复（需后续单独处理）
+
+| ID | 原因 |
+|----|------|
+| A-2026-M9/M10/M12 | DocumentFile.listFiles 主线程、Slider save 风暴、Android 端轮询未迁 observer — 性能优化，非阻塞 |
+| A-2026-M15 | 完整 `networkSecurityConfig.xml`（per-host cleartext）需配合 UI（用户为单服务器显式开启 cleartext）|
+| A-2026-M21 | Compose BOM 与 CMP 1.9.0 对齐 — 当前 BOM 仅作软约束，运行时已用 CMP 1.9.0，需联网验证可用 BOM 版本 |
+| A-2026-M22/M23/M24/M25 | Release 版本号穿透 / 签名 APK / 安装包 / AGENTS.md distZip 文档漂移 — 需整体规划 release pipeline |
+| A-2026-M26 | core-mpv/ui-compose 测试基础设施 + VFS 协议集成测试（Testcontainers）— 大工作量 |
+| D1/D2/D3/D5 | 历史文档同步（Android-Architecture / Tec / track-matching 三份过时）— 写作任务 |

@@ -11,6 +11,11 @@ import dev.windplayer.vfs.VfsProtocol
 object ServerStore {
     private const val TAG = "ServerStore"
     private const val PREFS = "windplayer_servers_encrypted"
+    // H10: distinct filename for the plaintext fallback. If we reused PREFS,
+    // a device that wrote plaintext (after a keystore failure) and later
+    // recovered crypto would refuse to read the non-encrypted file and the
+    // user would silently lose every saved server.
+    private const val PREFS_PLAIN = "windplayer_servers_plain"
 
     /**
      * `true` once we have successfully opened the encrypted prefs.
@@ -21,23 +26,36 @@ object ServerStore {
     var encryptionActive: Boolean = false
         private set
 
+    // H15: EncryptedSharedPreferences.create() does keystore + file IO + key
+    // derivation. Rebuilding it on every load/save/add/remove call causes
+    // noticeable jank at startup and on every server edit. Cache one instance
+    // per applicationContext (never per Activity, to avoid leaking the Activity).
+    @Volatile
+    private var cachedPrefs: SharedPreferences? = null
+    private val cacheLock = Any()
+
     private fun prefs(context: Context): SharedPreferences {
-        return try {
-            val masterKey = MasterKey.Builder(context)
-                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                .build()
-            val prefs = EncryptedSharedPreferences.create(
-                context, PREFS, masterKey,
-                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-            )
-            encryptionActive = true
-            prefs
-        } catch (e: Exception) {
-            // Log loudly — passwords will be stored in plaintext from now on.
-            Log.e(TAG, "EncryptedSharedPreferences unavailable, falling back to plaintext: ${e.message}")
-            encryptionActive = false
-            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        cachedPrefs?.let { return it }
+        synchronized(cacheLock) {
+            cachedPrefs?.let { return it }
+            val appContext = context.applicationContext
+            val built = try {
+                val masterKey = MasterKey.Builder(appContext)
+                    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                    .build()
+                EncryptedSharedPreferences.create(
+                    appContext, PREFS, masterKey,
+                    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                    EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+                ).also { encryptionActive = true }
+            } catch (e: Exception) {
+                // Log loudly — passwords will be stored in plaintext from now on.
+                Log.e(TAG, "EncryptedSharedPreferences unavailable, falling back to plaintext: ${e.message}")
+                encryptionActive = false
+                appContext.getSharedPreferences(PREFS_PLAIN, Context.MODE_PRIVATE)
+            }
+            cachedPrefs = built
+            return built
         }
     }
 
@@ -54,7 +72,8 @@ object ServerStore {
                 port = p.getString("s${i}_port", "0")?.toIntOrNull() ?: 0,
                 username = p.getString("s${i}_user", "") ?: "",
                 password = p.getString("s${i}_pass", "") ?: "",
-                basePath = p.getString("s${i}_path", "/") ?: "/"
+                basePath = p.getString("s${i}_path", "/") ?: "/",
+                useTls = p.getBoolean("s${i}_tls", false)
             )
         }
     }
@@ -73,9 +92,10 @@ object ServerStore {
             e.putString("s${i}_user", s.username)
             e.putString("s${i}_pass", s.password)
             e.putString("s${i}_path", s.basePath)
+            e.putBoolean("s${i}_tls", s.useTls)
         }
         for (i in servers.size until oldCount) {
-            listOf("id","name","proto","host","port","user","pass","path").forEach { f -> e.remove("s${i}_$f") }
+            listOf("id","name","proto","host","port","user","pass","path","tls").forEach { f -> e.remove("s${i}_$f") }
         }
         e.apply()
     }

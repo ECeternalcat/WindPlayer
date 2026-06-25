@@ -5,6 +5,7 @@ import dev.windplayer.vfs.FileNodeComparator
 import dev.windplayer.vfs.ServerConfig
 import dev.windplayer.vfs.VfsProtocol
 import dev.windplayer.vfs.VfsClient
+import java.io.File
 
 object MobileVfsManager {
 
@@ -28,6 +29,86 @@ object MobileVfsManager {
         client.connect(server)
         return try {
             client.resolveUrl(path)
+        } finally {
+            try { client.disconnect() } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * Download a small auxiliary file (subtitle / cover) from [server] into a
+     * cache directory. Returns the local [File] on success, null on failure.
+     *
+     * Uses a separate short-lived connection so it doesn't interfere with an
+     * in-flight StreamProxy session for the main video.
+     */
+    suspend fun downloadAuxFile(server: ServerConfig, file: FileNode, cacheDir: File): File? {
+        val safeName = sanitizeCacheName(file.name)
+        val localFile = File(cacheDir, safeName)
+        if (localFile.exists()) return localFile
+        val client = createClient(server)
+        return try {
+            cacheDir.mkdirs()
+            client.connect(server)
+            client.downloadFile(file.path, localFile.absolutePath)
+            localFile
+        } catch (_: Exception) {
+            try { if (localFile.exists()) localFile.delete() } catch (_: Exception) {}
+            null
+        } finally {
+            try { client.disconnect() } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * Reduce an untrusted remote filename to a safe single-component cache name.
+     * Strips path separators, `..`, and any character outside [A-Za-z0-9._-].
+     */
+    private fun sanitizeCacheName(name: String): String {
+        val cleaned = name.replace(Regex("[^A-Za-z0-9._-]"), "_")
+            .removePrefix("..").removeSuffix("..")
+        val safe = cleaned.ifBlank { "aux_${name.hashCode().toString(16)}" }
+        return File(safe).name
+    }
+
+    /**
+     * Delete a file on a remote server.
+     */
+    suspend fun deleteRemoteFile(server: ServerConfig, path: String): Boolean {
+        val client = createClient(server)
+        return try {
+            client.connect(server)
+            client.deleteFile(path)
+        } catch (_: Exception) {
+            false
+        } finally {
+            try { client.disconnect() } catch (_: Exception) {}
+        }
+    }
+
+    suspend fun renameRemoteFile(server: ServerConfig, oldPath: String, newName: String): Boolean {
+        val client = createClient(server)
+        return try {
+            client.connect(server)
+            val dir = oldPath.substringBeforeLast('/').ifBlank { "/" }
+            val newPath = if (dir.endsWith("/")) "$dir$newName" else "$dir/$newName"
+            client.renameFile(oldPath, newPath)
+        } catch (_: Exception) {
+            false
+        } finally {
+            try { client.disconnect() } catch (_: Exception) {}
+        }
+    }
+
+    suspend fun moveRemoteFile(server: ServerConfig, oldPath: String, destDir: String): Boolean {
+        val client = createClient(server)
+        return try {
+            client.connect(server)
+            val fileName = oldPath.substringAfterLast('/')
+            val cleanDest = destDir.trimEnd('/')
+            val newPath = "$cleanDest/$fileName"
+            client.moveFile(oldPath, newPath)
+        } catch (_: Exception) {
+            false
         } finally {
             try { client.disconnect() } catch (_: Exception) {}
         }

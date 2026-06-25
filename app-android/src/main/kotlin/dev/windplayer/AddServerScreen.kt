@@ -41,6 +41,9 @@ fun AddServerScreen(
     var username by remember { mutableStateOf(initialConfig?.username ?: "") }
     var password by remember { mutableStateOf(initialConfig?.password ?: "") }
     var basePath by remember { mutableStateOf(initialConfig?.basePath ?: "/") }
+    // H18: default FTP to FTPS for new servers (prefer security). Existing
+    // servers inherit their stored value via initialConfig.
+    var useTls by remember { mutableStateOf(initialConfig?.useTls ?: (initialConfig?.protocol == VfsProtocol.FTP)) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -62,7 +65,8 @@ fun AddServerScreen(
             port = port.toIntOrNull() ?: 0,
             username = username.trim(),
             password = password,
-            basePath = basePath.trim().ifBlank { "/" }
+            basePath = basePath.trim().ifBlank { "/" },
+            useTls = useTls
         )
     }
 
@@ -127,6 +131,52 @@ fun AddServerScreen(
             FieldRow("Username", username) { username = it }
             FieldRow("Password", password, isPassword = true) { password = it }
             FieldRow("Base Path", basePath) { basePath = it }
+
+            // H18: TLS toggle for FTP (FTPS). SFTP is always encrypted; WebDAV
+            // infers TLS from the https:// host prefix — no toggle needed.
+            if (protocol == VfsProtocol.FTP) {
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Use TLS (FTPS)",
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Switch(
+                        checked = useTls,
+                        onCheckedChange = { useTls = it },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color(0xFF0F84E4),
+                            checkedTrackColor = Color(0xFF0F84E4).copy(alpha = 0.4f)
+                        )
+                    )
+                }
+                if (!useTls) {
+                    Text(
+                        "⚠ Plain FTP sends your password in cleartext. Anyone on your network can intercept it. Enable TLS whenever the server supports it.",
+                        color = Color(0xFFFFB74D),
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(top = 2.dp, bottom = 4.dp)
+                    )
+                }
+            }
+
+            // H18: warn when WebDAV is configured for cleartext HTTP (no https:// prefix).
+            if (protocol == VfsProtocol.WEBDAV && host.isNotBlank() &&
+                !host.startsWith("https://", ignoreCase = true)
+            ) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "⚠ HTTP WebDAV sends your password in cleartext. Prefix the host with https:// to encrypt the connection.",
+                    color = Color(0xFFFFB74D),
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(vertical = 4.dp)
+                )
+            }
 
             Spacer(Modifier.height(16.dp))
 

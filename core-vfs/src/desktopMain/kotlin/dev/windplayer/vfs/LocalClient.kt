@@ -41,6 +41,18 @@ class LocalClient : VfsClient {
         File(remotePath).copyTo(File(localPath), overwrite = true)
     }
 
+    override suspend fun deleteFile(remotePath: String): Boolean {
+        return false
+    }
+
+    override suspend fun renameFile(oldPath: String, newPath: String): Boolean {
+        return false
+    }
+
+    override suspend fun moveFile(oldPath: String, newPath: String): Boolean {
+        return false
+    }
+
     override fun isConnected(): Boolean = true
 
     companion object {

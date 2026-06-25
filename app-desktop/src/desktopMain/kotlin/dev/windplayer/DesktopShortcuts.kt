@@ -26,7 +26,12 @@ internal class DesktopShortcutContext(
     val playlistToggle: MutableSharedFlow<Unit>,
     val cheatsheetToggle: MutableSharedFlow<Unit>
 ) {
-    /** Set by the App composable via `onSkipNextRegistered`. Read by the `N` and context-menu items. */
+    /**
+     * Set by the App composable via `onSkipNextRegistered` (Compose UI thread).
+     * Read by the `N` shortcut and context-menu items (Swing EDT).
+     * @Volatile ensures the EDT read observes the Compose-side write.
+     */
+    @Volatile
     var skipNextCallback: (() -> Unit)? = null
 
     fun isPlayer(): Boolean = layoutManager.currentScreen == dev.windplayer.ui.AppScreen.PLAYER

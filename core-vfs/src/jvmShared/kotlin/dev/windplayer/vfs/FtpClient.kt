@@ -7,6 +7,7 @@ import kotlinx.coroutines.withContext
 import org.apache.commons.net.ftp.FTP
 import org.apache.commons.net.ftp.FTPClient
 import org.apache.commons.net.ftp.FTPFile
+import org.apache.commons.net.ftp.FTPSClient
 import java.io.File
 import java.io.FileOutputStream
 
@@ -23,7 +24,17 @@ class FtpClient : VfsClient {
         try {
             disconnect()
             this@FtpClient.config = config
-            val client = FTPClient()
+            // H18: prefer FTPS (FTP over TLS) when the user opts in. FTPSClient
+            // extends FTPClient, so the rest of the API is identical. We use
+            // *explicit* FTPS (AUTH TLS on the standard control port 21/990),
+            // which is what ~all modern FTPS servers support.
+            val client: FTPClient = if (config.useTls) {
+                FTPSClient("TLS", false).also {
+                    LOG.info("using FTPS (explicit TLS) for ${config.bareHost}")
+                }
+            } else {
+                FTPClient()
+            }
             client.connect(config.bareHost, config.defaultPort())
             val loggedIn = if (config.username.isNotBlank()) {
                 client.login(config.username, config.password)
@@ -35,10 +46,21 @@ class FtpClient : VfsClient {
                 client.disconnect()
                 return@withContext false
             }
+            // After login, FTPS must execute PROT P to protect the data channel
+            // (the control channel is already encrypted by AUTH TLS). For plain
+            // FTP this is a no-op / would throw, so guard with a type check.
+            if (client is FTPSClient) {
+                try {
+                    client.execPBSZ(0)
+                    client.execPROT("P")
+                } catch (e: Exception) {
+                    LOG.warning("FTPS data channel protection (PROT P) failed — data channel may be cleartext: ${e.message}")
+                }
+            }
             client.enterLocalPassiveMode()
             client.setFileType(FTP.BINARY_FILE_TYPE)
             ftpClient = client
-            LOG.info("connected to ${config.bareHost}:${config.defaultPort()}")
+            LOG.info("connected to ${config.bareHost}:${config.defaultPort()} (TLS=${config.useTls})")
             true
         } catch (e: Exception) {
             LOG.warning("connect failed: ${e.message}")
@@ -98,6 +120,18 @@ class FtpClient : VfsClient {
             throw RuntimeException("FTP download failed for $remotePath")
         }
         LOG.info("downloaded $remotePath -> $localPath")
+    }
+
+    override suspend fun deleteFile(remotePath: String): Boolean {
+        return false
+    }
+
+    override suspend fun renameFile(oldPath: String, newPath: String): Boolean {
+        return false
+    }
+
+    override suspend fun moveFile(oldPath: String, newPath: String): Boolean {
+        return false
     }
 
     override fun isConnected(): Boolean {

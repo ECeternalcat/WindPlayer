@@ -55,11 +55,45 @@ internal class LayoutManager(
         Toolkit.getDefaultToolkit().createCustomCursor(img, Point(0, 0), "hidden")
     }
 
+    /**
+     * H2: Run [block] on the Swing EDT.
+     *
+     * In Compose Desktop every callback (Compose `onClick`, keyboard bindings
+     * via `JComponent.WHEN_IN_FOCUSED_WINDOW`, mouse listeners, Swing `Timer`)
+     * fires on the EDT — so the inline branch is the hot path and there is
+     * zero overhead for the existing callers.
+     *
+     * The wrapper exists as a defensive contract: every public method below
+     * mutates either Swing components (`frame.bounds`, `composePanel.setBounds`)
+     * or the Win32 HWND (`SetWindowLongW`, `SetWindowPos`), both of which
+     * require EDT serialization — Swing by single-thread contract, Win32 by
+     * window-message affinity. A future non-EDT caller (e.g. an mpv-event-thread
+     * listener) would otherwise silently corrupt window state; this helper
+     * serializes it correctly and synchronously instead.
+     *
+     * `invokeAndWait` is used (not `invokeLater`) so callers observe the side
+     * effect before returning — necessary because methods like `toggleFullscreen`
+     * flip `isFullscreen` and the next caller relies on the new state.
+     */
+    private inline fun onEdt(crossinline block: () -> Unit) {
+        if (SwingUtilities.isEventDispatchThread()) {
+            block()
+        } else {
+            try {
+                SwingUtilities.invokeAndWait { block() }
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+            } catch (e: java.lang.reflect.InvocationTargetException) {
+                throw (e.cause ?: e)
+            }
+        }
+    }
+
     // ------------------------------------------------------------------
     // Screen switches
     // ------------------------------------------------------------------
 
-    fun switchTo(screen: AppScreen) {
+    fun switchTo(screen: AppScreen) = onEdt {
         currentScreen = screen
         tracksExpanded = false
         controlsVisible = true
@@ -74,7 +108,7 @@ internal class LayoutManager(
         applyLayout()
     }
 
-    fun setTracksExpanded(expanded: Boolean) {
+    fun setTracksExpanded(expanded: Boolean) = onEdt {
         tracksExpanded = expanded
         if (expanded) {
             controlsVisible = true
@@ -87,14 +121,14 @@ internal class LayoutManager(
     // Fullscreen / PiP
     // ------------------------------------------------------------------
 
-    fun toggleFullscreen() {
-        if (currentScreen != AppScreen.PLAYER) return
+    fun toggleFullscreen() = onEdt {
+        if (currentScreen != AppScreen.PLAYER) return@onEdt
         if (isPip) exitPip()
         if (isFullscreen) exitFullscreen() else enterFullscreen()
     }
 
-    fun togglePip() {
-        if (currentScreen != AppScreen.PLAYER) return
+    fun togglePip() = onEdt {
+        if (currentScreen != AppScreen.PLAYER) return@onEdt
         if (isFullscreen) exitFullscreen()
         if (isPip) exitPip() else enterPip()
     }
@@ -121,8 +155,8 @@ internal class LayoutManager(
         applyLayout()
     }
 
-    fun exitFullscreen() {
-        if (!isFullscreen) return
+    fun exitFullscreen() = onEdt {
+        if (!isFullscreen) return@onEdt
         isFullscreen = false
         onFullscreenChanged?.invoke(false)
         hideTimer?.stop()
@@ -165,8 +199,8 @@ internal class LayoutManager(
         applyLayout()
     }
 
-    fun exitPip() {
-        if (!isPip) return
+    fun exitPip() = onEdt {
+        if (!isPip) return@onEdt
         isPip = false
         hideTimer?.stop()
         hideTimer = null
@@ -184,8 +218,8 @@ internal class LayoutManager(
         applyLayout()
     }
 
-    fun resizePip(delta: Int) {
-        if (!isPip) return
+    fun resizePip(delta: Int) = onEdt {
+        if (!isPip) return@onEdt
         pipWidth = (pipWidth + delta).coerceIn(320, 960)
         pipHeight = (pipHeight + delta * 9 / 16).coerceIn(180, 540)
         val screenBounds = frame.graphicsConfiguration.bounds
@@ -199,15 +233,15 @@ internal class LayoutManager(
     // PiP drag
     // ------------------------------------------------------------------
 
-    fun startDrag(screenPoint: Point) {
-        if (!isPip) return
+    fun startDrag(screenPoint: Point) = onEdt {
+        if (!isPip) return@onEdt
         singleClickTimer?.stop()
         dragStartScreen = screenPoint
         dragWindowStart = frame.location
     }
 
-    fun handleDrag(screenPoint: Point) {
-        if (!isPip || dragStartScreen == null || dragWindowStart == null) return
+    fun handleDrag(screenPoint: Point) = onEdt {
+        if (!isPip || dragStartScreen == null || dragWindowStart == null) return@onEdt
         val dx = screenPoint.x - dragStartScreen!!.x
         val dy = screenPoint.y - dragStartScreen!!.y
         frame.location = Point(dragWindowStart!!.x + dx, dragWindowStart!!.y + dy)
@@ -217,8 +251,8 @@ internal class LayoutManager(
     // Auto-hide controls / cursor
     // ------------------------------------------------------------------
 
-    fun onMouseActivity() {
-        if (currentScreen != AppScreen.PLAYER || (!isFullscreen && !isPip)) return
+    fun onMouseActivity() = onEdt {
+        if (currentScreen != AppScreen.PLAYER || (!isFullscreen && !isPip)) return@onEdt
         videoCanvas.cursor = Cursor.getDefaultCursor()
         if (!tracksExpanded && !controlsVisible) {
             controlsVisible = true
@@ -227,11 +261,11 @@ internal class LayoutManager(
         resetHideTimer()
     }
 
-    fun cancelHideTimer() {
+    fun cancelHideTimer() = onEdt {
         hideTimer?.stop()
     }
 
-    fun restartHideTimer() {
+    fun restartHideTimer() = onEdt {
         if ((isFullscreen || isPip) && currentScreen == AppScreen.PLAYER) {
             resetHideTimer()
         }
@@ -254,8 +288,8 @@ internal class LayoutManager(
     // Click vs double-click detection
     // ------------------------------------------------------------------
 
-    fun handleCanvasClick(player: MpvPlayer, osd: MutableSharedFlow<String>) {
-        if (currentScreen != AppScreen.PLAYER) return
+    fun handleCanvasClick(player: MpvPlayer, osd: MutableSharedFlow<String>) = onEdt {
+        if (currentScreen != AppScreen.PLAYER) return@onEdt
         singleClickTimer?.stop()
         singleClickTimer = Timer(250) {
             player.command("cycle", "pause")
@@ -266,8 +300,8 @@ internal class LayoutManager(
         singleClickTimer?.start()
     }
 
-    fun handleCanvasDoubleClick() {
-        if (currentScreen != AppScreen.PLAYER) return
+    fun handleCanvasDoubleClick() = onEdt {
+        if (currentScreen != AppScreen.PLAYER) return@onEdt
         singleClickTimer?.stop()
         singleClickTimer = null
         if (isPip) exitPip() else toggleFullscreen()
@@ -277,11 +311,17 @@ internal class LayoutManager(
     // Layout application
     // ------------------------------------------------------------------
 
-    fun applyLayout() {
+    fun applyLayout() = onEdt {
         val w = rootPanel.width
         val h = rootPanel.height
-        if (w <= 0 || h <= 0) return
+        if (w <= 0 || h <= 0) return@onEdt
 
+        // The actual setBounds must still be DEFERRED via invokeLater even when
+        // already on EDT. applyLayout is called from inside enterFullscreen /
+        // exitPip etc. immediately after `frame.bounds = ...`; if we mutated
+        // children inline, we could re-enter Swing's internal layout mid-pass.
+        // invokeLater queues us after the current EDT cycle, letting the
+        // frame.bounds change settle first.
         SwingUtilities.invokeLater {
             when (currentScreen) {
                 AppScreen.BROWSER, AppScreen.SETTINGS -> {

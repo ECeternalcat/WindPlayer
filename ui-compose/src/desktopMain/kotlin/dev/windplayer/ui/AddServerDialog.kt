@@ -27,6 +27,8 @@ fun AddServerDialog(
     var username by remember { mutableStateOf(initialConfig?.username ?: "") }
     var password by remember { mutableStateOf(initialConfig?.password ?: "") }
     var basePath by remember { mutableStateOf(initialConfig?.basePath ?: "/") }
+    // H18: default FTP to FTPS for new servers; preserve stored value when editing.
+    var useTls by remember { mutableStateOf(initialConfig?.useTls ?: (initialConfig?.protocol == VfsProtocol.FTP)) }
     var portError by remember { mutableStateOf(false) }
     var protocolExpanded by remember { mutableStateOf(false) }
 
@@ -129,6 +131,42 @@ fun AddServerDialog(
                     modifier = Modifier.fillMaxWidth(),
                     textStyle = TextStyle(color = Color.Unspecified)
                 )
+
+                // H18: TLS toggle for FTP (FTPS). Default ON for new FTP servers.
+                if (protocol == VfsProtocol.FTP) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Use TLS (FTPS)",
+                            fontSize = 13.sp
+                        )
+                        Switch(
+                            checked = useTls,
+                            onCheckedChange = { useTls = it }
+                        )
+                    }
+                    if (!useTls) {
+                        Text(
+                            text = "⚠ Plain FTP sends your password in cleartext. Anyone on your network can intercept it. Enable TLS whenever the server supports it.",
+                            color = Color(0xFFFFB74D),
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+
+                // H18: warn when WebDAV is configured for cleartext HTTP.
+                if (protocol == VfsProtocol.WEBDAV && host.isNotBlank() &&
+                    !host.startsWith("https://", ignoreCase = true)
+                ) {
+                    Text(
+                        text = "⚠ HTTP WebDAV sends your password in cleartext. Prefix the host with https:// to encrypt the connection.",
+                        color = Color(0xFFFFB74D),
+                        fontSize = 11.sp
+                    )
+                }
             }
         },
         confirmButton = {
@@ -143,7 +181,8 @@ fun AddServerDialog(
                             port = port.toIntOrNull() ?: 0,
                             username = username,
                             password = password,
-                            basePath = basePath.ifBlank { "/" }
+                            basePath = basePath.ifBlank { "/" },
+                            useTls = useTls
                         ))
                     }
                 },

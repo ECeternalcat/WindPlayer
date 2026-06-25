@@ -5,54 +5,73 @@ import android.util.Log
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import dev.windplayer.mpv.MpvPlayer
-import dev.windplayer.vfs.ServerConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
+import java.util.concurrent.atomic.AtomicBoolean
 
+/**
+ * SurfaceView that owns the mpv ↔ Surface binding lifecycle.
+ *
+ * **PFD ownership**: this view deliberately does NOT open `ParcelFileDescriptor`
+ * or resolve network URLs. The caller (`MobilePlayerScreen`) is the single
+ * owner of any pfd and the resolver of any URL — see A-2026-H12 in
+ * `Documents/Audit-2026-06-23.md`. Splitting ownership here used to leak one
+ * pfd per auto-play-next transition until FD exhaustion crashed the app.
+ *
+ * Flow:
+ *  1. surfaceCreated → init mpv (if first time) → attachSurface → initialize
+ *     → invoke [onSurfaceReady]. The screen then runs `resolveAndLoad` which
+ *     opens the pfd and calls `loadfile`.
+ *  2. surfaceDestroyed → detachSurface (no pfd cleanup here; the screen owns it).
+ */
 class MpvRenderView(
     context: Context,
     private val player: MpvPlayer,
-    private val filePath: String,
-    private val serverConfig: ServerConfig? = null,
-    private val onLoaded: () -> Unit
+    private val onSurfaceReady: () -> Unit
 ) : SurfaceView(context) {
 
-    private var pfd: android.os.ParcelFileDescriptor? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // H6: signals whether the current Surface is still valid. Set false in
+    // surfaceDestroyed; checked by the IO coroutine before attachSurface to
+    // avoid binding mpv to a destroyed surface during rapid rotation.
+    private val surfaceValid = AtomicBoolean(false)
 
     init {
         holder.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceCreated(holder: SurfaceHolder) {
                 Log.i(TAG, "surfaceCreated")
+                surfaceValid.set(true)
                 scope.launch {
                     try {
-                        // Resolve URL / open PFD OUTSIDE the player lock to avoid
-                        // blocking other player calls during network I/O.
-                        val loadPath = resolvePath(context, filePath, serverConfig)
-
-                        synchronized(player) {
-                            if (!player.isCreated()) {
-                                player.createWithContext(context)
-                                val s = SettingsHelper.load(context)
-                                player.setOption("vo", "gpu")
-                                player.setOption("hwdec", if (s.hwdecAuto) "auto-safe" else "no")
-                                player.setOption("keep-open", "yes")
-                                player.setOption("idle", "yes")
-                                player.setOption("sub-font-size", s.subFontSize.toString())
-                                player.setOption("sub-border-size", s.subBorderSize.toString())
-                                player.setOption("volume", s.defaultVolume.toString())
-                                player.setOption("screenshot-directory", context.getExternalFilesDir(null)?.absolutePath ?: context.filesDir.absolutePath)
-                                Log.i(TAG, "Attaching surface...")
-                            }
-                            player.attachSurface(holder.surface)
-                            player.initialize()
-                            Log.i(TAG, "mpv ready, loading file...")
-                            player.command("loadfile", loadPath)
+                        // mpv calls are serialized by MpvPlayer.lock internally.
+                        // No outer synchronized(player) needed (would be harmful:
+                        // blocks all player callers; see A-2026-H7).
+                        if (!player.isCreated()) {
+                            player.createWithContext(context)
+                            val s = SettingsHelper.load(context)
+                            player.setOption("vo", "gpu")
+                            player.setOption("hwdec", if (s.hwdecAuto) "auto-safe" else "no")
+                            player.setOption("keep-open", "yes")
+                            player.setOption("idle", "yes")
+                            player.setOption("sub-font-size", s.subFontSize.toString())
+                            player.setOption("sub-border-size", s.subBorderSize.toString())
+                            player.setOption("volume", s.defaultVolume.toString())
+                            player.setOption("screenshot-directory", context.getExternalFilesDir(null)?.absolutePath ?: context.filesDir.absolutePath)
+                            Log.i(TAG, "Attaching surface...")
                         }
+                        if (!surfaceValid.get()) {
+                            Log.i(TAG, "surface invalidated before attach, aborting")
+                            return@launch
+                        }
+                        player.attachSurface(holder.surface)
+                        player.initialize()
+                        Log.i(TAG, "mpv ready, handing off to screen for loadfile")
+                        // Screen takes it from here: opens pfd (if needed) and
+                        // issues loadfile. Centralized pfd ownership = no leaks.
+                        onSurfaceReady()
                     } catch (e: Exception) {
                         Log.e(TAG, "Player init error", e)
                     }
@@ -60,55 +79,30 @@ class MpvRenderView(
             }
             override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) {
                 Log.i(TAG, "surfaceChanged: ${w}x${h}")
-                synchronized(player) {
-                    if (player.isCreated()) {
-                        try {
-                            player.setProperty("vid", "no")
-                            player.setProperty("vid", "1")
-                        } catch (_: Exception) {}
-                    }
+                if (player.isCreated()) {
+                    try {
+                        // Toggle vid to force mpv to re-read ANativeWindow size
+                        // after rotation (kept from the legacy workaround).
+                        player.setProperty("vid", "no")
+                        player.setProperty("vid", "1")
+                    } catch (_: Exception) {}
                 }
             }
             override fun surfaceDestroyed(holder: SurfaceHolder) {
-                synchronized(player) {
-                    try { player.detachSurface() } catch (_: Exception) {}
-                    try { pfd?.close() } catch (_: Exception) {}
-                    pfd = null
-                }
+                surfaceValid.set(false)
+                try { player.detachSurface() } catch (_: Exception) {}
             }
         })
     }
 
-    private suspend fun resolvePath(context: Context, path: String, server: ServerConfig? = null): String {
-        if (path.startsWith("content://")) {
-            return try {
-                val uri = android.net.Uri.parse(path)
-                pfd = context.contentResolver.openFileDescriptor(uri, "r")
-                val fd = pfd?.fd ?: return path
-                Log.i(TAG, "Opened as fd://$fd")
-                "fd://$fd"
-            } catch (e: Exception) {
-                Log.e(TAG, "Open content URI failed: ${e.message}")
-                path
-            }
-        }
-        if (server != null) {
-            return try {
-                MobileVfsManager.resolveUrl(server, path)
-            } catch (e: Exception) {
-                Log.e(TAG, "resolveUrl failed: ${e.message}")
-                path
-            }
-        }
-        return path
-    }
-
+    /**
+     * Cancel any in-flight surface-created coroutine and mark the surface
+     * invalid. Called from `AndroidView.onRelease` when the player screen
+     * leaves composition. Does NOT touch pfd — that's the screen's job.
+     */
     fun release() {
         scope.cancel()
-        synchronized(player) {
-            try { pfd?.close() } catch (_: Exception) {}
-            pfd = null
-        }
+        surfaceValid.set(false)
     }
 
     companion object {

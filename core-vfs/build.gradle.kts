@@ -33,13 +33,13 @@ kotlin {
                 implementation(libs.ktor.client.cio)
                 implementation(libs.sshj)
                 implementation(libs.commons.net)
+                implementation(libs.slf4j.nop)
             }
         }
 
         val desktopMain by getting {
             dependsOn(jvmShared)
             dependencies {
-                implementation("org.slf4j:slf4j-nop:2.0.16")
                 implementation(libs.jna.platform)
             }
         }
