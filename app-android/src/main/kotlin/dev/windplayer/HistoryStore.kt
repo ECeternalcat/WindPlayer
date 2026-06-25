@@ -13,7 +13,10 @@ data class HistoryEntry(
     val duration: Double = 0.0,
     val parentDocId: String? = null,
     val treeUriString: String? = null,
-    val thumbnailPath: String? = null
+    val thumbnailPath: String? = null,
+    val selectedSid: String? = null,
+    val selectedAid: String? = null,
+    val speed: Double = 0.0
 )
 
 object HistoryStore {
@@ -35,14 +38,30 @@ object HistoryStore {
                 duration = p.getString("h${i}_dur", "0")?.toDoubleOrNull() ?: 0.0,
                 parentDocId = p.getString("h${i}_pdid", null),
                 treeUriString = p.getString("h${i}_turi", null),
-                thumbnailPath = p.getString("h${i}_thumb", null)
+                thumbnailPath = p.getString("h${i}_thumb", null),
+                selectedSid = p.getString("h${i}_sid_track", null),
+                selectedAid = p.getString("h${i}_aid_track", null),
+                speed = p.getString("h${i}_speed", "0")?.toDoubleOrNull() ?: 0.0
             )
         }
     }
 
     fun add(context: Context, entry: HistoryEntry): List<HistoryEntry> {
-        val current = load(context).filterNot { it.path == entry.path }
-        val updated = (listOf(entry) + current).take(MAX)
+        val current = load(context)
+        // Preserve playback state from any existing entry with the same path.
+        // Without this, re-playing a file resets position/tracks/speed to defaults.
+        val existing = current.firstOrNull { it.path == entry.path }
+        val merged = if (existing != null) {
+            entry.copy(
+                position = existing.position,
+                duration = existing.duration,
+                thumbnailPath = existing.thumbnailPath,
+                selectedSid = existing.selectedSid,
+                selectedAid = existing.selectedAid,
+                speed = existing.speed
+            )
+        } else entry
+        val updated = (listOf(merged) + current.filterNot { it.path == entry.path }).take(MAX)
         save(context, updated)
         return updated
     }
@@ -66,6 +85,14 @@ object HistoryStore {
         save(context, updated)
     }
 
+    fun updatePlaybackState(context: Context, path: String, sid: String?, aid: String?, speed: Double) {
+        val current = load(context)
+        val updated = current.map {
+            if (it.path == path) it.copy(selectedSid = sid, selectedAid = aid, speed = speed) else it
+        }
+        save(context, updated)
+    }
+
     private fun save(context: Context, entries: List<HistoryEntry>) {
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val oldCount = p.getInt("count", 0)
@@ -82,9 +109,12 @@ object HistoryStore {
             e.putString("h${i}_pdid", h.parentDocId)
             e.putString("h${i}_turi", h.treeUriString)
             e.putString("h${i}_thumb", h.thumbnailPath)
+            e.putString("h${i}_sid_track", h.selectedSid)
+            e.putString("h${i}_aid_track", h.selectedAid)
+            e.putString("h${i}_speed", h.speed.toString())
         }
         for (i in entries.size until oldCount) {
-            listOf("name", "path", "proto", "sid", "ts", "pos", "dur", "pdid", "turi", "thumb").forEach { f -> e.remove("h${i}_$f") }
+            listOf("name", "path", "proto", "sid", "ts", "pos", "dur", "pdid", "turi", "thumb", "sid_track", "aid_track", "speed").forEach { f -> e.remove("h${i}_$f") }
         }
         e.apply()
     }

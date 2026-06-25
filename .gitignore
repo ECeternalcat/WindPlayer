@@ -32,3 +32,4 @@ run-output.txt
 
 # Test data (large media files for dev testing)
 test/
+app-android/release

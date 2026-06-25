@@ -57,6 +57,9 @@ fun FileBrowserScreen(
     servers: List<ServerConfig>,
     onServerDelete: (String) -> Unit,
     onServerEdit: (ServerConfig) -> Unit,
+    localFolders: List<LocalFolder> = emptyList(),
+    onAddLocalFolder: (String, String) -> Unit = { _, _ -> },
+    onLocalFolderDelete: (String) -> Unit = {},
     history: List<HistoryEntry> = emptyList(),
     onPlayHistory: (HistoryEntry) -> Unit = {}
 ) {
@@ -69,6 +72,9 @@ fun FileBrowserScreen(
     var renameText by remember { mutableStateOf("") }
     var clipboardFile by remember { mutableStateOf<FileNode?>(null) }
     var clipboardIsCut by remember { mutableStateOf(false) }
+    var showAddFolderDialog by remember { mutableStateOf(false) }
+    var newFolderName by remember { mutableStateOf("") }
+    var pendingFolderName by remember { mutableStateOf<String?>(null) }
 
     var rootTreeUri by remember { mutableStateOf(SafHelper.loadTreeUri(context)) }
     var dirStack by remember { mutableStateOf<List<DocumentFile>>(emptyList()) }
@@ -79,9 +85,17 @@ fun FileBrowserScreen(
     ) { uri ->
         if (uri != null) {
             SafHelper.takePermission(context, uri)
-            SafHelper.saveTreeUri(context, uri)
-            rootTreeUri = uri
-            SafHelper.rootFromUri(context, uri)?.let { dirStack = listOf(it) }
+            val name = pendingFolderName
+            pendingFolderName = null
+            if (name != null) {
+                // New local folder flow: save entry and don't auto-open
+                onAddLocalFolder(name, uri.toString())
+            } else {
+                // Legacy: just open the folder directly
+                SafHelper.saveTreeUri(context, uri)
+                rootTreeUri = uri
+                SafHelper.rootFromUri(context, uri)?.let { dirStack = listOf(it) }
+            }
         }
     }
 
@@ -222,12 +236,32 @@ fun FileBrowserScreen(
             item { SectionHeader("Local Storage", Icons.Default.Folder) }
 
             if (dirStack.isEmpty()) {
-                item {
-                    Surface(Modifier.fillMaxWidth().clickable { folderLauncher.launch(null) }, color = Color.Transparent) {
+                // Show saved local folders as list (like servers)
+                items(localFolders, key = { it.id }) { folder ->
+                    Surface(Modifier.fillMaxWidth().clickable {
+                        val treeUri = android.net.Uri.parse(folder.treeUriString)
+                        rootTreeUri = treeUri
+                        SafHelper.rootFromUri(context, treeUri)?.let { dirStack = listOf(it) }
+                    }, color = Color.Transparent) {
                         Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.FolderOpen, null, tint = Color(0xFFFFA726), modifier = Modifier.size(24.dp))
+                            Icon(Icons.Default.Folder, null, tint = Color(0xFFFFA726), modifier = Modifier.size(24.dp))
                             Spacer(Modifier.width(12.dp))
-                            Text("Open Folder", color = Color(0xFFCCCCCC), fontSize = 14.sp)
+                            Column(Modifier.weight(1f)) {
+                                Text(folder.name, color = Color.White, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text("Local", color = Color(0xFF888888), fontSize = 11.sp)
+                            }
+                            IconButton(onClick = { onLocalFolderDelete(folder.id) }, modifier = Modifier.size(32.dp)) {
+                                Icon(Icons.Default.Delete, "Delete", tint = Color(0xFF666666), modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
+                }
+                item {
+                    Surface(Modifier.fillMaxWidth().clickable { showAddFolderDialog = true; newFolderName = "" }, color = Color.Transparent) {
+                        Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Add, null, tint = Color(0xFFFFA726), modifier = Modifier.size(24.dp))
+                            Spacer(Modifier.width(12.dp))
+                            Text("Add Folder", color = Color(0xFFFFA726), fontSize = 14.sp)
                         }
                     }
                 }
@@ -356,8 +390,38 @@ fun FileBrowserScreen(
         )
     }
 
-    // Paste button in title bar when clipboard is active is handled in the actions section above
-    // via clipboardFile state. The paste action appears when clipboardFile != null.
+    // Add local folder name dialog
+    if (showAddFolderDialog) {
+        AlertDialog(
+            onDismissRequest = { showAddFolderDialog = false },
+            title = { Text("Add Folder", color = Color.White) },
+            text = {
+                OutlinedTextField(
+                    value = newFolderName,
+                    onValueChange = { newFolderName = it },
+                    singleLine = true,
+                    placeholder = { Text("Folder name", color = Color(0xFF666666)) },
+                    colors = TextFieldDefaults.colors(
+                        focusedTextColor = Color.White, unfocusedTextColor = Color.White,
+                        focusedIndicatorColor = Color(0xFF0F84E4), cursorColor = Color(0xFF0F84E4)
+                    )
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (newFolderName.isNotBlank()) {
+                        showAddFolderDialog = false
+                        pendingFolderName = newFolderName
+                        folderLauncher.launch(null)
+                    }
+                }) { Text("Select Folder", color = Color(0xFF0F84E4)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddFolderDialog = false }) { Text("Cancel", color = Color(0xFF888888)) }
+            },
+            containerColor = Color(0xFF1A1A2E)
+        )
+    }
 }
 
 @Composable

@@ -39,6 +39,7 @@ fun MobileApp(externalVideoUri: Uri? = null) {
     }
 
     var servers by remember { mutableStateOf(ServerStore.load(context)) }
+    var localFolders by remember { mutableStateOf(LocalFolderStore.load(context)) }
     var history by remember { mutableStateOf(HistoryStore.load(context)) }
     var activeServer by remember { mutableStateOf<ServerConfig?>(null) }
     var playServerConfig by remember { mutableStateOf<ServerConfig?>(null) }
@@ -271,6 +272,14 @@ fun MobileApp(externalVideoUri: Uri? = null) {
             servers = servers,
             onServerDelete = { id -> servers = ServerStore.remove(context, id) },
             onServerEdit = { srv -> editingServer = srv; screen = "editServer" },
+            localFolders = localFolders,
+            onAddLocalFolder = { name, treeUriStr ->
+                val uri = android.net.Uri.parse(treeUriStr)
+                localFolders = LocalFolderStore.add(context, name, uri)
+            },
+            onLocalFolderDelete = { id ->
+                localFolders = LocalFolderStore.remove(context, id)
+            },
             history = history,
             onPlayHistory = { entry ->
                 if (entry.protocol == VfsProtocol.LOCAL) {

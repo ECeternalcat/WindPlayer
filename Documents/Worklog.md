@@ -4316,6 +4316,45 @@ Android 没有 `com.sun.net.httpserver.HttpServer`，因此用 `java.net.ServerS
 
 ---
 
+## 阶段四十九：Android 播放体验全面完善 (已完成)
+
+### 1. 自动下一集完整修复
+- EOF 轮询 `eof-reached`（keep-open 兼容）
+- 切集后：文件名更新、`pause=no`、控制面板隐藏、`eofHandled` 防重复
+
+### 2. 播放历史系统
+- HistoryStore: 10 条, SharedPreferences, position/duration/thumbnailPath/parentDocId/treeUriString
+- 横向缩略图 LazyRow, 退出时 screenshot-to-file 截图
+- 断点续播: 每 5 秒保存, 回播时 seek
+- SafPlaylistBuilder: DocumentsContract 重建本地播放列表
+
+### 3. 字幕系统
+- 外挂: SFTP 下载 + 本地 ContentResolver 复制 → sub-add (首个 select, 其余 auto)
+- 内封: FileLoaded 后自动选中第一个 sub 轨道
+
+### 4. 播放器 UI
+- 顶部可折叠面板: 右滑动画 Speed/Tracks/Camera
+- 底部: SkipPrev/FastRewind/PlayPause/FastForward/SkipNext
+- 右侧播放列表面板: slideInHorizontally
+
+### 5. 手势
+- 水平 ±30s / 垂直左亮度(0-255) / 垂直右系统音量
+- 系统亮度 WRITE_SETTINGS + 系统音量 AudioManager
+
+### 6. 导航修复
+- 播放器返回→服务器浏览, 文件夹逐级退回, 设置 BackHandler, 双击退出
+
+### 7. 文件关联
+- Android: ACTION_VIEW/ACTION_SEND video/*
+- PC: main(args) + --register 注册表
+
+### 8. 文件浏览器增强
+- 视频/完整模式切换, 长按菜单 Rename/Copy/Cut/Delete
+- VfsClient 新增 deleteFile/renameFile/moveFile
+- 本地 SAF DocumentFile + SFTP SSHJ rm/rename
+
+---
+
 ## 阶段四十八：Android 播放优化与 UX 改进 (已完成)
 
 ### 1. StreamProxy 缓冲优化（缓解跳转卡顿）
@@ -4430,3 +4469,42 @@ Android 端之前完全不支持外挂字幕匹配，现在复用 commonMain 的
 ✅ :app-desktop:compileKotlinDesktop BUILD SUCCESSFUL
 ✅ :core-vfs:desktopTest             BUILD SUCCESSFUL (66 tests)
 ```
+
+---
+
+## 阶段四十九：Android 播放体验全面完善 (已完成)
+
+### 1. 自动下一集完整修复
+- EOF 轮询 `eof-reached`（keep-open 兼容）
+- 切集后：文件名更新、`pause=no`、控制面板隐藏、`eofHandled` 防重复
+
+### 2. 播放历史系统
+- HistoryStore: 10 条, SharedPreferences, position/duration/thumbnailPath/parentDocId/treeUriString
+- 横向缩略图 LazyRow, 退出时 screenshot-to-file 截图
+- 断点续播: 每 5 秒保存, 回播时 seek
+- SafPlaylistBuilder: DocumentsContract 重建本地播放列表
+
+### 3. 字幕系统
+- 外挂: SFTP 下载 + 本地 ContentResolver 复制 → sub-add (首个 select, 其余 auto)
+- 内封: FileLoaded 后自动选中第一个 sub 轨道
+
+### 4. 播放器 UI
+- 顶部可折叠面板: 右滑动画 Speed/Tracks/Camera
+- 底部: SkipPrev/FastRewind/PlayPause/FastForward/SkipNext
+- 右侧播放列表面板: slideInHorizontally
+
+### 5. 手势
+- 水平 ±30s / 垂直左亮度(0-255) / 垂直右系统音量
+- 系统亮度 WRITE_SETTINGS + 系统音量 AudioManager
+
+### 6. 导航修复
+- 播放器返回→服务器浏览, 文件夹逐级退回, 设置 BackHandler, 双击退出
+
+### 7. 文件关联
+- Android: ACTION_VIEW/ACTION_SEND video/*
+- PC: main(args) + --register 注册表
+
+### 8. 文件浏览器增强
+- 视频/完整模式切换, 长按菜单 Rename/Copy/Cut/Delete
+- VfsClient 新增 deleteFile/renameFile/moveFile
+- 本地 SAF DocumentFile + SFTP SSHJ rm/rename

@@ -706,7 +706,7 @@ fun FileBrowserScreen(
                                     }
                                 }
                             },
-                            showActions = isLocal,
+                            showActions = true,
                             onDelete = { deleteTarget = file },
                             onRename = {
                                 renameTarget = file
@@ -730,7 +730,13 @@ fun FileBrowserScreen(
                     val target = deleteTarget!!
                     deleteTarget = null
                     scope.launch {
-                        if (vfsManager.deleteLocalFile(target.path)) {
+                        val ok = if (isLocal) {
+                            vfsManager.deleteLocalFile(target.path)
+                        } else {
+                            val sid = activeServerId ?: return@launch
+                            vfsManager.deleteServerFile(sid, target.path)
+                        }
+                        if (ok) {
                             files = files.filterNot { it.path == target.path }
                         } else {
                             errorText = "Failed to delete file"
@@ -773,9 +779,20 @@ fun FileBrowserScreen(
                     renameTarget = null
                     if (renameText.isNotBlank() && renameText != target.name) {
                         scope.launch {
-                            if (vfsManager.renameLocalFile(target.path, renameText)) {
-                                files = if (currentPath.isEmpty()) vfsManager.listLocalRoots()
+                            val ok = if (isLocal) {
+                                vfsManager.renameLocalFile(target.path, renameText)
+                            } else {
+                                val sid = activeServerId ?: return@launch
+                                vfsManager.renameServerFile(sid, target.path, renameText)
+                            }
+                            if (ok) {
+                                files = if (isLocal) {
+                                    if (currentPath.isEmpty()) vfsManager.listLocalRoots()
                                     else vfsManager.listLocalDirectory(currentPath)
+                                } else {
+                                    val sid2 = activeServerId ?: return@launch
+                                    vfsManager.listServerDirectory(sid2, currentPath).getOrDefault(emptyList())
+                                }
                             } else {
                                 errorText = "Failed to rename file"
                             }

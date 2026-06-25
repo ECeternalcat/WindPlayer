@@ -38,6 +38,11 @@ class MpvRenderView(
     // surfaceDestroyed; checked by the IO coroutine before attachSurface to
     // avoid binding mpv to a destroyed surface during rapid rotation.
     private val surfaceValid = AtomicBoolean(false)
+    // Track whether onSurfaceReady has been called at least once. On subsequent
+    // surface recreations (e.g. returning from background), we skip it — mpv
+    // still has the file loaded and will resume from the current position once
+    // the surface is reattached. Calling loadfile again would restart from 0.
+    private val firstInitDone = AtomicBoolean(false)
 
     init {
         holder.addCallback(object : SurfaceHolder.Callback {
@@ -68,10 +73,14 @@ class MpvRenderView(
                         }
                         player.attachSurface(holder.surface)
                         player.initialize()
-                        Log.i(TAG, "mpv ready, handing off to screen for loadfile")
-                        // Screen takes it from here: opens pfd (if needed) and
-                        // issues loadfile. Centralized pfd ownership = no leaks.
-                        onSurfaceReady()
+                        if (!firstInitDone.getAndSet(true)) {
+                            Log.i(TAG, "mpv ready, handing off to screen for loadfile")
+                            // Screen takes it from here: opens pfd (if needed) and
+                            // issues loadfile. Centralized pfd ownership = no leaks.
+                            onSurfaceReady()
+                        } else {
+                            Log.i(TAG, "surface reattached (resuming playback)")
+                        }
                     } catch (e: Exception) {
                         Log.e(TAG, "Player init error", e)
                     }

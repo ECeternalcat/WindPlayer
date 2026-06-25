@@ -114,6 +114,18 @@ class VfsManager {
         } catch (_: Exception) { false }
     }
 
+    suspend fun deleteServerFile(serverId: String, path: String): Boolean = withContext(Dispatchers.IO) {
+        val client = clients[serverId] ?: return@withContext false
+        client.deleteFile(path)
+    }
+
+    suspend fun renameServerFile(serverId: String, oldPath: String, newName: String): Boolean = withContext(Dispatchers.IO) {
+        val client = clients[serverId] ?: return@withContext false
+        val dir = oldPath.substringBeforeLast('/').ifBlank { "/" }
+        val newPath = if (dir.endsWith("/")) "$dir$newName" else "$dir/$newName"
+        client.renameFile(oldPath, newPath)
+    }
+
     suspend fun preparePlayback(
         serverId: String,
         videoNode: FileNode
