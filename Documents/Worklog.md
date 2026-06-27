@@ -4355,6 +4355,31 @@ Android 没有 `com.sun.net.httpserver.HttpServer`，因此用 `java.net.ServerS
 
 ---
 
+## 阶段五十：桌面端文件操作 + 本地文件夹列表化 + 播放状态完整恢复 (已完成)
+
+### 1. 桌面端文件管理
+- `showActions` 对本地和 SFTP 服务器文件都启用
+- 删除/重命名：本地走 `File`，服务器走 `VfsClient`，`VfsManager` 新增 `deleteServerFile()/renameServerFile()`
+
+### 2. 本地文件夹列表化
+- `LocalFolderStore`（SharedPreferences）持久化多个本地文件夹
+- FileBrowserScreen Local Storage 区域改为列表展示（与 Network Storage 风格一致）
+- 添加流程：输入名称 → SAF 选择目录 → 保存
+
+### 3. 播放状态完整恢复
+- **Bug 修复**：`HistoryStore.add()` 合并已有条目的 position/tracks/speed，不再覆盖为 0
+- HistoryEntry 新增 `selectedSid`/`selectedAid`/`speed`
+- 每 5 秒保存 sid/aid/speed，回播时恢复 time-pos → aid → sid → speed
+
+### 4. 后台返回不重置播放位置
+- `MpvRenderView` 新增 `firstInitDone`，首次 surfaceCreated 才 loadfile
+- 后续 surface 重建（后台返回）只 attachSurface，mpv 从暂停位置继续
+
+### 5. 长按倍速
+- 自定义 `awaitEachGesture` 手势：长按 400ms → 2.0x，松手恢复
+
+---
+
 ## 阶段四十八：Android 播放优化与 UX 改进 (已完成)
 
 ### 1. StreamProxy 缓冲优化（缓解跳转卡顿）
@@ -4508,3 +4533,536 @@ Android 端之前完全不支持外挂字幕匹配，现在复用 commonMain 的
 - 视频/完整模式切换, 长按菜单 Rename/Copy/Cut/Delete
 - VfsClient 新增 deleteFile/renameFile/moveFile
 - 本地 SAF DocumentFile + SFTP SSHJ rm/rename
+
+---
+
+## 阶段五十：桌面端文件操作 + 本地文件夹列表化 + 播放状态完整恢复 (已完成)
+
+### 1. 桌面端文件管理
+- `showActions` 对本地和 SFTP 服务器文件都启用
+- 删除/重命名：本地走 `File`，服务器走 `VfsClient`，`VfsManager` 新增 `deleteServerFile()/renameServerFile()`
+
+### 2. 本地文件夹列表化
+- `LocalFolderStore`（SharedPreferences）持久化多个本地文件夹
+- FileBrowserScreen Local Storage 区域改为列表展示（与 Network Storage 风格一致）
+- 添加流程：输入名称 → SAF 选择目录 → 保存
+
+### 3. 播放状态完整恢复
+- **Bug 修复**：`HistoryStore.add()` 合并已有条目的 position/tracks/speed，不再覆盖为 0
+- HistoryEntry 新增 `selectedSid`/`selectedAid`/`speed`
+- 每 5 秒保存 sid/aid/speed，回播时恢复 time-pos → aid → sid → speed
+
+### 4. 后台返回不重置播放位置
+- `MpvRenderView` 新增 `firstInitDone`，首次 surfaceCreated 才 loadfile
+- 后续 surface 重建（后台返回）只 attachSurface，mpv 从暂停位置继续
+
+### 5. 长按倍速
+- 自定义 `awaitEachGesture` 手势：长按 400ms → 2.0x，松手恢复
+
+
+---
+
+## 阶段五十一：Mastercard 风格设计系统 + 黑暗模式 (已完成)
+
+依据 `Documents/DESIGN.md`（Mastercard 启发的设计规范）对桌面端与安卓端 UI 进行全面重构，并新增完整的黑暗模式与主题切换。两端编译通过。
+
+### 1. 设计系统令牌（WindColors / WindRadius）
+
+#### 调色板（DESIGN.md §2）
+| 角色 | 浅色 | 深色 |
+|------|------|------|
+| Canvas Cream（画布） | `#F3F0EE` | `#141413` |
+| Lifted Cream（抬升面） | `#FCFBFA` | `#1F1D1C` |
+| White（卡片/输入） | `#FFFFFF` | `#282624` |
+| Ink（文字 + 主按钮） | `#141413` | `#F3F0EE` |
+| Slate（次要文字） | `#696969` | `#A8A29A` |
+| Dust Taupe（禁用/低语） | `#D1CDC7` | `#6E6A64` |
+| Hairline（分隔线） | `#E2DDD5` | `#3A3735` |
+| Signal Orange（破坏/合规） | `#CF4500` | `#E8511A` |
+| Light Signal Orange（点缀） | `#F37338` | `#F37338` |
+
+#### 圆角阶梯（DESIGN.md §5）
+- Chip `6dp` / Button `20dp` / Consent `24dp` / Stadium `40dp` / Pill `99dp` / FullCircle `50%`
+- **刻意省略 8–16dp 中间值**——只有「小 ≤6 / 中大 20–40 / 全胶囊 99+」三档
+
+#### 设计语言落地
+- **eyebrow 标签**：橙点 + 大写粗体 + `+4%` 字距（分区标题信号）
+- **胶囊形**：导航项、搜索框、语言项、FilterChip 全用 Pill
+- **主按钮**：Ink 底 + Canvas Cream 字（20dp 圆角）；次按钮：白底 + 1.5dp Ink 描边
+- **Signal Orange 严格保留**给删除/警告/合规动作，不做营销 CTA
+- 播放器 chrome 视为「footer/media frame」，**始终深色**（见 §4）
+
+### 2. 黑暗模式架构
+
+#### ThemeMode + PlayerSettings
+- commonMain 新增 `enum class ThemeMode { LIGHT, DARK, SYSTEM }`
+- `PlayerSettings` 新增 `themeMode: ThemeMode = SYSTEM`（默认跟随系统）
+- 持久化随设置一起存盘，向后兼容
+
+#### WindColors 用 mutableStateOf 实现零侵入切换
+桌面与安卓的 `WindColors` 全部属性改为 `var by mutableStateOf(...)`，新增 `applyDark(dark: Boolean)`：
+- 切换时所有引用 `WindColors.*` 的界面**自动重组**，无需 `CompositionLocal`、无需改任何界面代码
+- 幂等：重写相同值不触发通知，不会循环
+- **深色是浅色的语义镜像**：`Ink`/`CanvasCream` 互补互换，文字与主按钮同步反转（仍是「奶油字 / 反色胶囊」），`White`/`LiftedCream` 维持「比画布更亮」的层级
+
+#### 系统深色检测
+- **桌面** `DesktopSystemTheme`（desktopMain，尽力而为）：
+  - Windows：`reg query ...Personalize /v AppsUseLightTheme`（0x0=深色）
+  - macOS：`defaults read -g AppleInterfaceStyle`（"Dark"=深色）
+  - Linux：`GTK_THEME` 含 "dark"
+  - 结果进程级缓存；切换系统主题需重启或切设置重解析
+- **安卓** `MobileApp`：读 `Configuration.uiMode & UI_MODE_NIGHT_MASK`，配置变更（重建 Activity）自动重算
+- 状态栏图标明暗随主题切换（`WindowInsetsControllerCompat.isAppearanceLightStatusBars = !isDark`）
+
+#### colorScheme 构建
+- `windColorScheme(isDark)`（桌面）/ `androidColorScheme(isDark)`（安卓）：用固定 hex 构建 `lightColorScheme` / `darkColorScheme`，避免与 `applyDark` 的执行顺序耦合
+
+### 3. 安卓端 Phosphor 图标集成（来自 `icons/`）
+
+安卓原先用 Material 内置图标，本次改为真正使用 `icons/Fonts/regular/Phosphor.ttf`：
+
+- 复制 `Phosphor.ttf` → `app-android/src/main/res/font/phosphor.ttf`
+- `Phosphor.kt`：从 `style.css` 解析出的 PUA 码点常量（`PLAY='\ue3d0'` 等 ~70 个）+ Phosphor FontFamily + `PhosphorIcon(glyph, tint, size)` 可组合函数
+- 码点提取方式：`Select-String style.css -Pattern "ph-xxx:" -Context 0,1` 读取每条 `content: "\eXXX"`
+- 所有 `Icon(Icons.Default.X, ...)` 替换为 `PhosphorIcon(Phosphor.X, ..., size = N.dp)`
+
+### 4. 播放器 chrome 始终深色
+
+播放器覆盖层位于视频之上，**两个主题下都应深色**。新增固定 `WindColors.MediaInk/MediaCream/MediaMuted/MediaSurface/MediaAccent`（不随 `applyDark` 翻转），把两个 PlayerScreen 内的 `Ink/CanvasCream/DustTaupe/Charcoal/White` 引用机械替换为 media 等价物。`LightSignalOrange/SignalOrange` 保持（点缀色两主题相近）。
+
+### 5. 设置内主题切换
+
+桌面 `SettingsScreen` 与安卓 `MobileSettingsScreen` 新增「Appearance」分区：三段式胶囊选择 Light / Dark / Follow System，选中项为 Ink 反色胶囊。I18n 已加 `appearance/theme_light/theme_dark/theme_system`（中英）。
+
+### 关键技术决策
+- **mutableStateOf 全局对象 vs CompositionLocal**：选前者——所有已写好的界面代码零改动即支持主题切换；代价是颜色令牌是可变全局单例（本应用单进程，可接受）
+- **深色 = 语义镜像**：而非为每个组件单独写深色变体。关键洞察是 `Ink`（文字+按钮）与 `CanvasCream`（画布+按钮字）互补，二者一起翻转即得到正确的反色胶囊与文字
+- **播放器固定深色**：视频媒体框天然深色（DESIGN.md §4），不跟随主题，避免浅色控制条压在视频上刺眼
+- **桌面系统检测尽力而为**：JVM 无统一系统主题 API，用平台原生命令查询；不可测时回退浅色，用户仍可强制选 Light/Dark
+
+### 编译验证
+- ✅ `:app-desktop:compileKotlinDesktop` — BUILD SUCCESSFUL
+- ✅ `:app-android:compileDebugKotlin` — BUILD SUCCESSFUL
+
+### 文件变更
+```
+新增：
+  ui-compose/src/desktopMain/.../WindTheme.kt             # themeable WindColors + windColorScheme + WindRadius
+  ui-compose/src/desktopMain/.../DesktopSystemTheme.kt    # 系统深色检测（Win/macOS/Linux）
+  ui-compose/src/desktopMain/resources/icons/{caret-down,warning,arrow-right}.svg
+  app-android/src/main/kotlin/.../Phosphor.kt             # 码点常量 + PhosphorIcon
+  app-android/src/main/kotlin/.../WindTheme.kt            # androidColorScheme(isDark)
+  app-android/src/main/res/font/phosphor.ttf              # Phosphor 字体
+
+修改：
+  ui-compose/src/commonMain/.../PlayerSettings.kt         # + ThemeMode 枚举 + themeMode 字段
+  ui-compose/src/commonMain/.../I18n.kt                   # + appearance/theme_* 键（中英）
+  ui-compose/src/desktopMain/.../App.kt                   # isDark 解析 + windColorScheme + applyDark
+  ui-compose/src/desktopMain/.../SettingsScreen.kt        # Appearance 分区 + ThemeSelectorRow
+  ui-compose/src/desktopMain/.../PlayerScreen.kt          # 媒体固定深色（Media* 颜色）
+  ui-compose/src/desktopMain/.../{FileBrowserScreen,AddServerDialog,TrackSelectionSheet}.kt  # 奶油/墨黑/胶囊重做
+  app-android/src/main/.../WindColors.kt                  # themeable + applyDark + Media* + WindRadius
+  app-android/src/main/.../MobileApp.kt                   # 主题装配（MaterialTheme+Surface+SideEffect+状态栏）
+  app-android/src/main/.../MainActivity.kt                # 简化为 setContent { MobileApp() }
+  app-android/src/main/.../MobileSettingsScreen.kt        # Appearance 分区 + ThemeSelectorRow
+  app-android/src/main/.../MobilePlayerScreen.kt          # 媒体固定深色
+  app-android/src/main/.../{FileBrowserScreen,ServerBrowseScreen,AddServerScreen}.kt         # 奶油/墨黑/胶囊 + Phosphor 图标重做
+  app-desktop/src/desktopMain/.../Main.kt                 # Swing 面板背景改奶油
+```
+
+---
+
+## 第五十一阶段状态总结
+
+**已完成**：Mastercard 风格设计系统全面落地（桌面 + 安卓）、Phosphor 图标在安卓端通过字体方案集成、完整黑暗模式（ThemeMode 三态 + 系统检测 + 设置内切换 + 状态栏适配）、播放器 chrome 始终深色
+
+**下一步**：
+- Sofia Sans 字体接入（DESIGN.md 推荐的 MarkForMC 开源替代，目前用系统默认 sans）
+- 装饰性橙色轨道弧线（circle portrait 间的连接线，DESIGN.md §4 标志性元素）
+- 主题切换的启动闪屏优化（首帧 applyDark 前的可能浅色闪烁）
+
+
+---
+
+## 阶段五十二：设计系统打磨 — Sofia Sans 字体 / 启动闪屏 / 审计 (已完成)
+
+承接阶段五十一的 Mastercard 设计系统，补齐「下一步」清单中的高价值项与可选打磨项。两端编译通过，core-vfs 测试通过。
+
+### 1. Sofia Sans 字体接入（还原度最高的一项）
+
+DESIGN.md 指定 MarkForMC（专有），开源替代为 Sofia Sans。此前用系统默认 sans，字距设了但字体没换。
+
+- 从 fontsource CDN 下载静态 3 字重 TTF（latin 子集，各 ~44KB，magic `00010000` 校验）：Regular 400 / Medium 500 / Bold 700
+- **桌面**：放 `ui-compose/src/desktopMain/resources/fonts/`，用 `androidx.compose.ui.text.platform.Font("fonts/xxx.ttf", weight)`（JVM classpath 资源加载）构建 `SofiaSansFamily`
+- **安卓**：放 `app-android/src/main/res/font/sofia_sans_{regular,medium,bold}.ttf`，用 `Font(R.font.xxx, weight)` 构建
+- `withFamily()` 扩展：把 FontFamily `.merge` 进 Typography 全部 15 个 role，保留原字号/字距/行高
+- **全局继承坑**：M3 `MaterialTheme` 不把 typography 推进 `LocalTextStyle`，所以裸 `Text(fontSize=...)` 不会继承字体。用 `CompositionLocalProvider(LocalTextStyle provides typography.bodyLarge)` 包裹根内容解决（`LocalTextStyle` 实际在 `androidx.compose.material3` 包，**非** `androidx.compose.ui.text` —— 这是踩坑点，jar 内确认 `material3/TextKt$LocalTextStyle`）
+
+### 2. 启动闪屏修复
+
+此前 `WindColors.applyDark()` 跑在 `SideEffect`（首帧之后），深色模式首帧会闪一帧浅色。
+- **桌面**：`Main.kt` 在 `setContent` 前读 `loadSettings().themeMode` + `DesktopSystemTheme.isSystemDark()`，预先 `WindColors.applyDark(initialDark)`
+- **安卓**：`MainActivity.onCreate` 在 `setContent` 前读 `Configuration.uiMode`，预先 `WindColors.applyDark(night)`
+- 运行时切换仍由 `App.kt` / `MobileApp` 的 `SideEffect` 保持同步
+
+### 3. Swing 面板背景同步
+
+`Main.kt` 的 `composePanel.background` 原硬编码奶油 `0xFFF3F0EE`，深色模式缩窗/加载会漏奶油底。改为读已解析的 `WindColors.CanvasCream`（`.red/.green/.blue` Float → `java.awt.Color(float,float,float)`），因 `applyDark` 已在设置背景前执行，首帧即正确。
+
+### 4. 圆角一致性审计
+
+grep `RoundedCornerShape(\d+` 全代码库。**仅 1 处漏网**：安卓 `MobilePlayerScreen` 的 OSD 覆盖层用 `RoundedCornerShape(8.dp)`（8–16dp 是 DESIGN.md 明令缺席的中间档）。改为 `WindRadius.Consent`（24dp）。其余全部命中 6/20/24/40/99/50% 合规阶梯。
+
+### 5. 深色对比度审计
+
+逐项核对 `DustTaupe` 用途（深色 `#6E6A64` 在 `#141413` 上约 3.2:1）：placeholder、`(empty)`、开关 unchecked、Cancel、未选 Tab、删除图标 —— 全部属于 DESIGN 定义的 whisper/disabled 角色，合规。
+- **顺带发现一个真 Bug**：桌面 `TrackSelectionSheet.kt` 渲染在「始终深色」的播放器面上，但上一轮漏转 media 颜色，仍用可主题化 `WindColors` → 深色模式下文字变成 `#141413` 压在 `#141413` 上**不可见**。机械替换为 `MediaInk/MediaCream/MediaMuted/MediaSurface` 修复。
+
+### 6. 空状态 ghost watermark
+
+新增 `WindColors.GhostWatermark`（浅 `#E8E2DA` / 深 `#2A2826`，cream-on-cream，DESIGN.md §4）。桌面文件浏览器「未选择」空状态改为 72sp / weight 500 / -2% 字距的 `WindPlayer` 大字水印 + Slate 提示语，替代原先的纯灰文字，赋予分区氛围。
+
+### 7. 默认组件配色审计
+
+grep 残留 `Color(0x...)`：播放器覆盖层（`0x99000000`/`0xE6141413`）是固定 media chrome，正确。**1 处主题敏感漏网**：安卓 `AddServerScreen` 测试结果框硬编码浅奶油底 `0xFFEFEAE3`/`0xFFF6E6DE`，深色下会是一块突兀的浅卡。改为 `WindColors.White`（主题化）+ Hairline/SignalOrange 描边。colorScheme（light/dark）已完整映射 surfaceContainer 等，其余依赖 colorScheme 的默认组件（DropdownMenu/AlertDialog scrim 等）深色下正常。
+
+### 关键技术决策
+- **字体全局继承**：用 `CompositionLocalProvider(LocalTextStyle provides bodyLarge)` 而非逐个 Text 改 style —— 零界面改动，所有裸 Text 自动继承 Sofia Sans
+- **`LocalTextStyle` 包路径**：在 `androidx.compose.material3`（material3 模块的 TextKt），不在 `androidx.compose.ui.text`。通过解压 `material3-release-runtime.jar` 确认（`material3/TextKt$LocalTextStyle`）
+- **预解析主题早于首帧**：在 setContent 前同步调用 `applyDark`，配合运行时 `SideEffect` 双保险
+
+### 编译验证
+- ✅ `:app-desktop:compileKotlinDesktop` — BUILD SUCCESSFUL
+- ✅ `:app-android:compileDebugKotlin` — BUILD SUCCESSFUL
+- ✅ `:core-vfs:desktopTest` — BUILD SUCCESSFUL
+
+### 文件变更
+```
+新增：
+  ui-compose/src/desktopMain/resources/fonts/{SofiaSans-Regular,Medium,Bold}.ttf
+  app-android/src/main/res/font/{sofia_sans_regular,sofia_sans_medium,sofia_sans_bold}.ttf
+  app-android/src/main/kotlin/.../WindTypography.kt     # SofiaSansFamily + WindTypography(withFamily)
+
+修改：
+  ui-compose/src/desktopMain/.../WindTheme.kt           # SofiaSansFamily + withFamily + GhostWatermark token + applyDark 分支
+  ui-compose/src/desktopMain/.../App.kt                 # LocalTextStyle provides bodyLarge（字体全局继承）
+  ui-compose/src/desktopMain/.../FileBrowserScreen.kt   # 空状态 ghost watermark
+  ui-compose/src/desktopMain/.../TrackSelectionSheet.kt # 主题化 → Media* 固定深色（修深色不可见 Bug）
+  app-android/src/main/.../WindColors.kt                # + GhostWatermark token + applyDark 分支
+  app-android/src/main/.../MobileApp.kt                 # typography=WindTypography + LocalTextStyle provides bodyLarge
+  app-android/src/main/.../MainActivity.kt              # setContent 前预 applyDark
+  app-android/src/main/.../MobilePlayerScreen.kt        # OSD 8dp → Consent（圆角合规）
+  app-android/src/main/.../AddServerScreen.kt           # 测试结果框底色主题化
+  app-desktop/src/desktopMain/.../Main.kt               # 预 applyDark + Swing 背景读 WindColors
+```
+
+---
+
+## 第五十二阶段状态总结
+
+**已完成**：Sofia Sans 字体全平台接入（含全局继承坑修复）、启动闪屏消除（预解析主题）、Swing 背景同步、圆角审计（修 1 处）、对比度审计（顺带修 TrackSelectionSheet 深色不可见 Bug）、空状态 ghost watermark、默认组件配色审计（修测试结果框）
+
+**下一步**：
+- 装饰性橙色轨道弧线（DESIGN.md §4 标志元素，需评估在播放器场景的适用性）
+- 主题运行时切换时同步 Swing 面板背景（当前仅启动时同步，运行时切主题极小概率边缘闪）
+- 字体子集化进一步压缩（当前 latin 子集已较小）
+
+
+---
+
+## 阶段五十三：全面本地化修复 — 主页面不随语言切换 + 其余页面补全 (已完成)
+
+### 问题根因
+
+设置页选中文后只有设置页切换、主页仍英文。排查发现：**安卓 `FileBrowserScreen` 0 处 `I18n.get`**——分区标题、列表项、上下文菜单、对话框全是硬编码英文字面量。设置页用了 `I18n.get`，所以它正常；主页不读 `I18n.current`，自然不随语言变。机制本身没问题（`I18n.current` 是 `mutableStateOf`，读它的可组合会重组）。
+
+随后顺手把两端其余页面的硬编码英文一并补全。
+
+### 新增 I18n 键（中英，约 40 个）
+
+`network_storage` / `local_storage` / `add_folder` / `add_storage` / `folder_name` / `select_folder` / `copy` / `cut` / `paste` / `move_here` / `on_this_device` / `empty_dir` / `ok` / `name` / `edit_server` / `testing` / `test_connection` / `use_tls` / `host_required` / `ftp_warning` / `webdav_warning` / `connected_items`(`%d`) / `failed_msg`(`%s`) / `connection_error` / `press_back_again` / `playback_error` / `track_n`(`%s`) / `osd_vol` / `osd_brightness` / `connect_failed`(`%s`) / `toast_deleted` / `toast_delete_failed` / `toast_renamed` / `toast_rename_failed` / `toast_moved` / `toast_move_failed` / `server_not_found` / `encryption_warning` / `track_selection` / `add_external`(`%s`) / `add_title`(`%s`) / `port_hint` / `err_open_failed` / `next_msg`(`%s`) / `playlist_complete` / `error_prefix`(`%s`) / `status_ended` / `status_stopped` / `osd_sub_delay` / `osd_audio_delay` / `osd_ab_a` / `osd_ab_b` / `osd_ab_clear` / `osd_screenshot_saved` / `osd_frame_plus` / `osd_frame_minus` / `osd_contrast` / `osd_saturation` / `osd_gamma` / `subtitle_added`(`%s`) / `osd_playing` / `osd_paused` / `osd_muted`。
+
+带 `%s`/`%d` 的用 `String.format(I18n.get(key), arg)` 拼接。
+
+### 安卓端（全部页面）
+
+- **FileBrowserScreen**：分区标题、Add Server/Add Folder、上下文菜单（Rename/Copy/Cut/Delete）、重命名对话框、添加文件夹对话框、添加存储选择器、粘贴按钮、`(empty)` —— 0 → 23 处 `I18n.get`。
+- **ServerBrowseScreen**：Rename/Move/Delete、重命名对话框、`(empty)`。
+- **AddServerScreen**：标题（Edit/Add Server）、表单字段（Name/Host/Port/Username/Password/Base Path）、Protocol eyebrow、Use TLS、两条警告、Test Connection/Testing、Host required Toast、连接结果（`connected_items`/`failed_msg`）。
+- **MobilePlayerScreen**：返回退出 Toast、Playback Error/Back、Playlist (N)、轨道 Tab（Video/Audio/Subtitle）、Off、Track N、OSD（Vol/Brightness/Speed/Screenshot）。
+- **MobileApp**：全部 Toast（Connect failed、Deleted/Renamed/Moved ± failed、Server not found、加密警告）。
+- **MobileSettingsScreen**：核对无遗漏（已全用 I18n）。
+
+### 桌面端（其余页面）
+
+桌面 `FileBrowserScreen` / `SettingsScreen` 此前已用 I18n。本轮补：
+- **AddServerDialog**：标题、字段标签、Use TLS、警告、Save/Cancel。
+- **TrackSelectionSheet**：Track Selection、None、Add External/Add 标题、Tab 标签（新增 `TrackType.localizedLabel()`）、Cancel。
+- **PlayerScreen**：statusText（Ready/Loading/Ended/Stopped/Playlist complete/Next/Error）。
+- **OSD 反馈**（`CanvasMouseController` / `DesktopContextMenu` / `DesktopShortcuts`）：Vol/Brightness/Speed/Sub delay/Audio delay/A-B Loop/EQ Reset/Screenshot/Frame ±/Playing/Paused/Muted、EQ 属性标签（addEqItem 内 brightness/contrast/saturation/gamma）、拖放字幕 OSD。
+
+`SFTP · WebDAV · FTP`、`>> +5s`/`<< -30s` 等纯符号+数字/专有名词保持硬编码（不翻译）。
+
+### 关键技术决策
+- **`I18n.get` 非 `@Composable` 仍可触发重组**：`current` 是 `mutableStateOf`，在组合期间被读取即注册依赖，改值后读取方重组——设置页已验证此机制，主页改用 `I18n.get` 后即随语言切换。
+- **格式字符串**：动态值（连接结果/轨道号/错误/OSD）用 `String.format(I18n.get("key"), arg)`，键值含 `%s`/`%d` 占位符，中英文案各自正确的语序。
+
+### 编译验证
+- ✅ `:app-desktop:compileKotlinDesktop` — BUILD SUCCESSFUL
+- ✅ `:app-android:compileDebugKotlin` — BUILD SUCCESSFUL
+- ✅ `:core-vfs:desktopTest` — BUILD SUCCESSFUL
+
+### 文件变更
+```
+修改：
+  ui-compose/src/commonMain/.../I18n.kt                       # +~60 键（中英）
+  app-android/.../FileBrowserScreen.kt                        # 硬编码 → I18n.get（+import）
+  app-android/.../ServerBrowseScreen.kt                       # 同上
+  app-android/.../AddServerScreen.kt                          # 表单/警告/测试连接/Toast
+  app-android/.../MobilePlayerScreen.kt                       # OSD/错误/轨道/播放列表
+  app-android/.../MobileApp.kt                                # Toast 全量
+  ui-compose/src/desktopMain/.../AddServerDialog.kt           # 表单/警告/按钮
+  ui-compose/src/desktopMain/.../TrackSelectionSheet.kt       # +localizedLabel() / 标题/标签
+  ui-compose/src/desktopMain/.../PlayerScreen.kt              # statusText 本地化
+  app-desktop/.../CanvasMouseController.kt                    # OSD Vol/Brightness
+  app-desktop/.../DesktopContextMenu.kt                       # OSD + addEqItem EQ 标签
+  app-desktop/.../DesktopShortcuts.kt                         # OSD 全量
+  app-desktop/.../Main.kt                                     # 拖放字幕 OSD
+```
+
+---
+
+## 第五十三阶段状态总结
+
+**已完成**：本地化根因修复（主页硬编码英文）+ 安卓全部页面 + 桌面其余页面 + 桌面 OSD 反馈全面本地化；两端切换语言即时生效。
+
+**下一步**：无紧急项；可选——为更多语言（如日语）追加翻译映射、或抽取一个 `Localizable` 抽象统一管理复数/格式。
+
+
+---
+
+## 阶段五十四：安卓网络流后台恢复 + Recent 历史进度缺失修复 (已完成)
+
+### 1. 网络流后台返回黑屏/无响应
+
+**现象**：网络存储（SFTP/WebDAV/FTP）视频播放时休眠/退后台，再回前台后进度还在但黑屏，暂停/播放/跳转全无反应。本地文件正常。
+
+**根因**：后台期间系统回收 socket，本地 `StreamProxy` 的 SSH 会话断开。`ON_RESUME` 只发 `pause=no`，但 mpv 的 HTTP 数据源已死 —— mpv 卡在读取死连接上，命令全部排队阻塞。本地文件的 `ParcelFileDescriptor` 后台仍开着，所以取消暂停即可续读。
+
+**修复**：`MobilePlayerScreen` 的 `ON_RESUME` 分支，网络流（`serverConfig != null`）改为从保存的位置**重新加载**而非仅取消暂停：
+```kotlin
+if (fileLoaded && serverConfig != null) {
+    记下 position / speed / sid / aid
+    scope.launch {
+        resolveAndLoad(path)        // 关闭死的旧 session → 建新 StreamProxy 会话 → loadfile
+        pendingResume = resumeAt    // 在 resolveAndLoad 返回后赋值（它内部会先清零）
+        pendingResumeSid/Aid/Speed = ...
+    }
+} else {
+    player.setProperty("pause", "no")   // 本地文件保持原逻辑
+}
+```
+- `FileLoaded` 处理器据 `pendingResume*` seek 回原位、恢复字幕/音轨/速度。
+- 时序安全：`resolveAndLoad` 是 suspend，`loadfile` 后即返回；`pendingResume` 赋值在其后，而 `FileLoaded` 等 mpv 异步解析后才触发，赋值必先于它。
+- 守卫 `fileLoaded && serverConfig != null`：初次播放 / 本地文件不受影响。
+
+### 2. 网络流 Recent 历史不记录播放进度（见阶段五十五）
+
+---
+
+## 第五十四阶段状态总结
+
+**已完成**：网络流后台返回黑屏/无响应修复（重新加载网络文件恢复死连接）。
+
+
+---
+
+## 阶段五十五：网络流 Recent 历史恢复「从头播放」修复 (已完成)
+
+### 现象
+网络存储视频退出后再从 Recent 进入，依然从头播放（本地文件正常）。
+
+### 根因
+并非「进度没记录」—— `HistoryStore` 的记录/匹配逻辑（按 path 匹配、`add()` 合并保留 position、`updatePosition` 拒绝用 0 覆盖）经核查对网络/本地完全对称，进度是有写入的。真正问题在**恢复 seek**：
+
+`MobilePlayerScreen` 的 `FileLoaded` 处理器用 `setProperty("time-pos", pos)` 在文件加载后立即 seek。本地文件加载即可 seek，但 **HTTP 流（StreamProxy）加载后 demuxer 还在初始化，立即 seek 会被静默丢弃** → mpv 从 0 开始播放。用户看到「从头播放」便以为进度没记录。
+
+### 修复（`MobilePlayerScreen.kt`）
+
+#### 1. 用 mpv `start` 选项恢复（主，对网络可靠）
+`resolveAndLoad` 在 reset 之前捕获 `val startAt = pendingResume`，在 `loadfile` 之前设置：
+```kotlin
+player.setProperty("start", if (startAt > 1.0) "%.3f".format(startAt) else "0")
+player.command("loadfile", loadPath)
+```
+`start` 选项让 mpv **在加载过程中 seek**（HTTP 流会在初始 Range 请求阶段就跳到目标位置），不与 demuxer 初始化竞争。每次 `loadfile` 前都重新设置，auto-play-next 时 `startAt=0` 不受影响。
+
+#### 2. FileLoaded seek 作为兜底
+`loadfile` 后重新 `pendingResume = startAt`，让 `FileLoaded` 处理器的 `time-pos` seek 也触发一次（对同一位置的无害二次 seek）。`FileLoaded` 处理器 seek 后会把 `pendingResume` 清零，因此 **auto-play-next 不受影响**（其 `resolveAndLoad` 捕获到 `startAt=0`）。覆盖个别 mpv 构建忽略 `start` 选项的情况。
+
+#### 3. 后台恢复 reload 时序对齐
+阶段五十四的 `ON_RESUME` 网络 reload：改为在 `resolveAndLoad` **之前**设 `pendingResume = resumeAt`（之前是之后），使其被捕获进 `start` 选项；sid/aid/speed 仍在之后设（供 `FileLoaded` 处理器恢复轨道）。
+
+#### 4. 退出时强制 flush 进度
+`captureThumbAndExit` 在截图/`onBack` 前补一次 `onPositionUpdate` + `onPlaybackStateUpdate`：用户在 5 秒轮询周期内（或首个周期前）退出也能记录进度，消除「快速退出丢进度」的边缘情况。
+
+### 关键决策
+- **`start` 选项 vs `time-pos` seek**：`start` 是 mpv 恢复流媒体的标准做法（加载期 seek，走 Range），`time-pos` 在 FileLoaded 后 seek 会与 demuxer 竞争。两者并用（主+兜底）最稳。
+- **不破坏 auto-play-next**：`pendingResume` 的捕获→reset→(FileLoaded 再清零) 链确保只有显式恢复的那次加载带位置，后续自动播放从 0 开始。
+
+### 编译验证
+- ✅ `:app-android:compileDebugKotlin` — BUILD SUCCESSFUL
+
+### 文件变更
+```
+修改：
+  app-android/.../MobilePlayerScreen.kt
+    # resolveAndLoad: 捕获 startAt + loadfile 前设 start 选项 + loadfile 后重置 pendingResume 作兜底
+    # ON_RESUME 网络 reload: pendingResume 改在 resolveAndLoad 之前设
+    # captureThumbAndExit: 退出前 flush position/tracks
+```
+
+---
+
+## 第五十五阶段状态总结
+
+**已完成**：网络流 Recent 恢复「从头播放」修复（mpv `start` 选项加载期 seek + FileLoaded 兜底 + 退出 flush 进度）。
+
+
+---
+
+## 阶段五十六：网络流熄屏恢复「有声音无图像」修复 (已完成)
+
+### 现象
+阶段五十四修复了网络流熄屏后冻结/无响应（改为 ON_RESUME 重新加载）。但引入新问题：恢复后进度对、也在播放，但**只有声音、视频黑屏**。本地文件正常。
+
+### 根因
+阶段五十四把网络 reload 放在 `ON_RESUME`，而 `ON_RESUME` 通常**早于** `surfaceCreated`（SurfaceView 的 surface 在窗口重新可见后才重建）。于是 `loadfile` 在 surface 尚未重新绑定给 mpv 时执行 → mpv 加载了文件（音频照常解码输出）但视频输出没有 window → 黑屏。本地文件不 reload，surface 在 `surfaceCreated` 重新 `attachSurface` 后直接恢复渲染，所以没事。
+
+### 修复（`MobilePlayerScreen.kt` + `MpvRenderView.kt`）
+
+把网络 reload 从「ON_RESUME 立即执行」改为「surface 重新绑定后执行」：
+
+1. **`MpvRenderView` 新增 `onSurfaceReattached` 回调**：在 `surfaceCreated` 的重连分支（`firstInitDone` 已为 true 时）于 `attachSurface` **之后**调用，表示 surface 已重新绑定。
+2. **`pendingNetworkResume` 标志（`AtomicBoolean`）**：`ON_RESUME` 对网络流只 `set(true)`，不再立即 reload。
+3. **`onSurfaceReattached` 消费标志**：`compareAndSet(true, false)` 命中才 reload —— 此时 surface 已绑定，`loadfile` 跑在活体 surface 上，视频正常渲染。
+
+### 为什么用标志位而不是直接在重连分支 reload
+`surfaceCreated` 在**旋转**时也会触发（surface 重建）。旋转不该 reload（流还活着）。`ON_RESUME` 只在真正后台→前台时触发（manifest 已声明处理 `orientation`，旋转不重建 Activity、不触发 ON_RESUME），所以用「ON_RESUME 置标志 → surfaceCreated 消费」精确区分两种重连：
+- 后台恢复：ON_RESUME 置标志 → surfaceCreated 消费 → reload ✓
+- 旋转：无 ON_RESUME → 标志为 false → surfaceCreated 不 reload ✓
+
+### 时序（后台→前台，网络）
+```
+ON_PAUSE → pause=yes
+surfaceDestroyed → detachSurface
+ON_RESUME → pendingNetworkResume=true（不 reload）
+surfaceCreated → attachSurface（重新绑定 surface）→ onSurfaceReattached
+            → 消费标志 → resolveAndLoad（start 选项恢复进度）→ 视频渲染 ✓
+```
+
+### 编译验证
+- ✅ `:app-android:compileDebugKotlin` — BUILD SUCCESSFUL
+
+### 文件变更
+```
+修改：
+  app-android/.../MpvRenderView.kt          # + onSurfaceReattached 回调（重连分支 attachSurface 后调用）
+  app-android/.../MobilePlayerScreen.kt     # + pendingNetworkResume 标志；ON_RESUME 改为置标志；onSurfaceReattached 消费并 reload
+```
+
+---
+
+## 第五十六阶段状态总结
+
+**已完成**：网络流熄屏恢复「有声音无图像」修复（reload 延后到 surface 重新绑定后执行，标志位区分后台恢复与旋转）。
+
+
+---
+
+## 阶段五十七：本地文件熄屏恢复「有声音无图像」修复 (已完成)
+
+### 现象
+阶段五十六修好了网络流，但**本地文件**熄屏/进后台再恢复仍然只有声音、视频黑屏。
+
+### 根因
+本地文件不 reload，`ON_RESUME` 直接 `pause=no` 取消暂停（此时 surface 尚未重新绑定）→ mpv 解码音频正常，但视频输出链（vo）在后台 `surfaceDestroyed` → `detachSurface` 时已被拆除，重新 `attachSurface` 后 mpv **不会自动重建 vo** → 黑屏。
+
+代码里本有个 `surfaceChanged` 的 `vid` no→1 切换 workaround 来强制重建 vo，但恢复时 `surfaceChanged` 不一定触发（仅尺寸变化才触发），所以漏了。
+
+### 修复（`MpvRenderView.kt`）
+在 `surfaceCreated` 的重连分支、`attachSurface` **之后**补一次 `vid` no→1 切换，强制 mpv 重建视频输出链并绑定到刚 attach 的 surface：
+```kotlin
+} else {   // surface reattached
+    player.setProperty("vid", "no")
+    player.setProperty("vid", "1")
+    onSurfaceReattached()
+}
+```
+- 本地：surface 绑定后 vid 切换重建 vo → 视频恢复 ✓
+- 网络：vid 切换后再走 `onSurfaceReattached` 的 reload（loadfile 也会重建 vo），冗余但无害
+
+恢复时序（本地，后台→前台）：
+```
+ON_PAUSE → pause=yes
+surfaceDestroyed → detachSurface（vo 拆除）
+ON_RESUME → pause=no（音频先恢复）
+surfaceCreated → attachSurface → vid no→1（重建 vo 绑定新 surface）→ 视频恢复 ✓
+```
+
+### 编译验证
+- ✅ `:app-android:compileDebugKotlin` — BUILD SUCCESSFUL
+
+### 文件变更
+```
+修改：
+  app-android/.../MpvRenderView.kt   # surfaceCreated 重连分支补 vid no→1 切换
+```
+
+
+---
+
+## 阶段五十八：自动播放下一集不生成 Recent 封面修复 (已完成)
+
+### 现象
+自动播放下一集时，被切走的那一集没有生成封面，Recent 列表里这些自动播放过的集数都显示默认图标。只有用户手动退出（`captureThumbAndExit`）的那一集才有封面。
+
+### 根因
+封面只在**退出**时捕获（`captureThumbAndExit` → `screenshot-to-file`）。自动播放下一集、手动跳下一集/上一集、播放列表跳转这 5 条切集路径都直接 `currentIdx++ → resolveAndLoad`，从不为「被切走的那一集」留封面。中间各集从未退出过，所以一直没封面。
+
+### 修复（`MobilePlayerScreen.kt`）
+抽出 `captureThumbnailForPath(path)`（截图 + `HistoryStore.updateThumbnail`），在每条切集路径里、`resolveAndLoad` **之前**先为「即将离开的那一集」截图：
+```kotlin
+val leavingPath = directoryVideos.getOrNull(currentIdx)?.path   // 增减前捕获
+currentIdx++/--
+...
+scope.launch(Dispatchers.IO) {
+    if (leavingPath != null) captureThumbnailForPath(leavingPath)  // mpv 仍持该集帧时截图
+    resolveAndLoad(nextFile.path)                                  // 之后再切到下一集
+}
+```
+
+覆盖 5 条路径：
+1. `MpvEvent.EndFile` 自动下一集
+2. eof 轮询自动下一集（keep-open 下的实际触发点）
+3. `playNext()`（手动/快捷键下一集）
+4. `playPrev()`（上一集）
+5. 播放列表点击跳转
+
+`captureThumbAndExit` 改为复用同一 helper（行为不变）。
+
+### 关键点
+- **截图必须在 `loadfile` 之前**：`screenshot-to-file` 与 `loadfile` 都走 mpv 内部锁串行，放在同一个 `Dispatchers.IO` 协程里顺序执行，确保截到的是「离开那集」的帧，而不是下一集。
+- **leavingPath 在 `currentIdx` 增减前捕获**，路径才正确。
+- **~100ms 截图跑在 IO 线程**，不阻塞主线程 UI；切集本就有可见过渡，这点延迟可接受。
+- **eof 时帧仍有效**：`keep-open=yes` 保留最后一帧，截图可用。
+- 每集只在「被切走时」截一次（退出或切下一集），无重复。
+
+### 编译验证
+- ✅ `:app-android:compileDebugKotlin` — BUILD SUCCESSFUL
+
+### 文件变更
+```
+修改：
+  app-android/.../MobilePlayerScreen.kt   # 抽出 captureThumbnailForPath；5 条切集路径切前补截图；captureThumbAndExit 复用 helper
+```

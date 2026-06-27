@@ -64,7 +64,7 @@ fun PlayerScreen(
     var isPlaying by remember { mutableStateOf(false) }
     var position by remember { mutableStateOf(0.0) }
     var duration by remember { mutableStateOf(0.0) }
-    var statusText by remember { mutableStateOf("Ready") }
+    var statusText by remember { mutableStateOf(I18n.get("ready")) }
     var fileLoaded by remember { mutableStateOf(false) }
     var isSeeking by remember { mutableStateOf(false) }
     var seekTarget by remember { mutableStateOf(0.0) }
@@ -154,7 +154,7 @@ fun PlayerScreen(
                         if (event.reason == 4) {
                             isPlaying = false
                             fileLoaded = false
-                            statusText = "Error: mpv failed to open file"
+                            statusText = I18n.get("err_open_failed")
                         } else if (fileLoaded) {
                             isPlaying = false
                             val shouldAutoPlay = (event.reason == 0 || event.reason == 2)
@@ -166,21 +166,21 @@ fun PlayerScreen(
                                 if (nextIndex < directoryVideoPaths.size) {
                                     val nextPath = directoryVideoPaths[nextIndex]
                                     val nextName = nextPath.substringAfterLast('/').substringAfterLast('\\')
-                                    statusText = "Next: $nextName"
+                                    statusText = String.format(I18n.get("next_msg"), nextName)
                                     fileLoaded = false
                                     callbacks.onOsdEvent(">> Next: $nextName")
                                     callbacks.onJumpToFile(nextPath)
                                 } else {
-                                    statusText = "Playlist complete"
+                                    statusText = I18n.get("playlist_complete")
                                     callbacks.onOsdEvent("Playlist complete")
                                 }
                             } else {
-                                statusText = if (event.reason == 0) "Ended" else "Stopped"
+                                statusText = if (event.reason == 0) I18n.get("status_ended") else I18n.get("status_stopped")
                             }
                         }
                     }
                     is MpvEvent.Error -> {
-                        statusText = "Error: ${event.message}"
+                        statusText = String.format(I18n.get("error_prefix"), event.message)
                     }
                     is MpvEvent.PropertyChange -> handlePropertyChange(
                         event = event,
@@ -202,12 +202,12 @@ fun PlayerScreen(
                                 if (nextIndex < directoryVideoPaths.size) {
                                     val nextPath = directoryVideoPaths[nextIndex]
                                     val nextName = nextPath.substringAfterLast('/').substringAfterLast('\\')
-                                    statusText = "Next: $nextName"
+                                    statusText = String.format(I18n.get("next_msg"), nextName)
                                     fileLoaded = false
                                     callbacks.onOsdEvent(">> Next: $nextName")
                                     callbacks.onJumpToFile(nextPath)
                                 } else {
-                                    statusText = "Playlist complete"
+                                    statusText = I18n.get("playlist_complete")
                                     callbacks.onOsdEvent("Playlist complete")
                                 }
                             }
@@ -256,7 +256,7 @@ fun PlayerScreen(
             isSeeking = false
             eofAutoPlayed = false
             resumeApplied = false
-            statusText = "Loading..."
+            statusText = I18n.get("loading")
             for ((key, value) in initialMpvOptions) {
                 player.setProperty(key, value)
             }
@@ -270,7 +270,7 @@ fun PlayerScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(Color(0xFF1A1A2E))
+            .background(WindColors.MediaInk)
             .padding(horizontal = 16.dp, vertical = 8.dp)
     ) {
         val playIcon = iconPainter(PhosphorIcons.PLAY)
@@ -282,7 +282,7 @@ fun PlayerScreen(
 
         if (duration > 0) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(text = formatDuration(position), color = Color.White, fontSize = 12.sp)
+                Text(text = formatDuration(position), color = WindColors.MediaCream, fontSize = 12.sp)
                 Slider(
                     value = position.toFloat().coerceIn(0f, duration.toFloat()),
                     onValueChange = { newPos ->
@@ -297,11 +297,12 @@ fun PlayerScreen(
                     valueRange = 0f..duration.toFloat(),
                     modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
                     colors = SliderDefaults.colors(
-                        thumbColor = Color(0xFF0F84E4),
-                        activeTrackColor = Color(0xFF0F84E4)
+                        thumbColor = WindColors.LightSignalOrange,
+                        activeTrackColor = WindColors.LightSignalOrange,
+                        inactiveTrackColor = WindColors.MediaCream.copy(alpha = 0.15f)
                     )
                 )
-                Text(text = formatDuration(duration), color = Color.White, fontSize = 12.sp)
+                Text(text = formatDuration(duration), color = WindColors.MediaCream, fontSize = 12.sp)
             }
             Spacer(modifier = Modifier.height(6.dp))
         }
@@ -319,7 +320,7 @@ fun PlayerScreen(
                     isPlaying = false
                     position = 0.0
                     duration = 0.0
-                    statusText = "Ready"
+                    statusText = I18n.get("ready")
                     subtitlesAdded = false
                     callbacks.onBack()
                 },
@@ -361,7 +362,7 @@ fun PlayerScreen(
                     Icon(
                         painter = iconPainter(PhosphorIcons.LIST),
                         contentDescription = "Tracks",
-                        tint = if (showTrackSheet) Color(0xFF0F84E4) else Color.White,
+                        tint = if (showTrackSheet) WindColors.LightSignalOrange else WindColors.MediaCream,
                         modifier = Modifier.size(18.dp)
                     )
                 }
@@ -379,7 +380,7 @@ fun PlayerScreen(
                     Icon(
                         painter = iconPainter(PhosphorIcons.QUEUE),
                         contentDescription = "Playlist",
-                        tint = if (showPlaylist) Color(0xFF0F84E4) else Color.White,
+                        tint = if (showPlaylist) WindColors.LightSignalOrange else WindColors.MediaCream,
                         modifier = Modifier.size(18.dp)
                     )
                 }
@@ -408,7 +409,7 @@ fun PlayerScreen(
                     Icon(
                         painter = if (isMuted) speakerSlashIcon else speakerHighIcon,
                         contentDescription = if (isMuted) "Unmute" else "Mute",
-                        tint = Color.White,
+                        tint = WindColors.MediaCream,
                         modifier = Modifier.size(18.dp)
                     )
                 }
@@ -425,8 +426,9 @@ fun PlayerScreen(
                     valueRange = 0f..100f,
                     modifier = Modifier.width(80.dp),
                     colors = SliderDefaults.colors(
-                        thumbColor = Color(0xFF0F84E4),
-                        activeTrackColor = Color(0xFF0F84E4)
+                        thumbColor = WindColors.LightSignalOrange,
+                        activeTrackColor = WindColors.LightSignalOrange,
+                        inactiveTrackColor = WindColors.MediaCream.copy(alpha = 0.15f)
                     )
                 )
             }
@@ -454,7 +456,7 @@ fun PlayerScreen(
                     Icon(
                         painter = iconPainter(PhosphorIcons.LIGHTNING),
                         contentDescription = if (hwdecAuto) "HW Decode" else "SW Decode",
-                        tint = if (hwdecAuto) Color(0xFF0F84E4) else Color(0xFF888888),
+                        tint = if (hwdecAuto) WindColors.LightSignalOrange else WindColors.MediaMuted,
                         modifier = Modifier.size(18.dp)
                     )
                 }
@@ -463,22 +465,23 @@ fun PlayerScreen(
                         player.setProperty("speed", "1.00")
                         speed = 1.0
                     },
-                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                    shape = WindRadius.Button,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (speed != 1.0) Color(0xFF0F84E4) else Color(0xFF2A2A3E)
+                        containerColor = if (speed != 1.0) WindColors.LightSignalOrange else WindColors.MediaSurface
                     )
                 ) {
                     Text(
                         text = "%.1fx".format(speed),
                         fontSize = 10.sp,
-                        color = if (speed != 1.0) Color.White else Color(0xFF888888)
+                        color = if (speed != 1.0) WindColors.MediaCream else WindColors.MediaMuted
                     )
                 }
             }
 
             Text(
                 text = statusText,
-                color = Color(0xFF666666),
+                color = WindColors.MediaMuted,
                 fontSize = 9.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -530,9 +533,9 @@ fun PlayerScreen(
  *
  * Pulled out of the events-collector block so the dispatch table is readable.
  * `value` types match what [MpvPlayer.observeProperty] promises for each format:
- *  - FLAG → Boolean    (true / false)
- *  - INT64 → Long
- *  - DOUBLE → Double
+ *  - FLAG ↁEBoolean    (true / false)
+ *  - INT64 ↁELong
+ *  - DOUBLE ↁEDouble
  */
 private fun handlePropertyChange(
     event: MpvEvent.PropertyChange,
@@ -550,7 +553,7 @@ private fun handlePropertyChange(
         "mute" -> setIsMuted(event.value == true)
         "volume" -> {
             val v = event.value as? Long ?: return
-            // Skip while the user is dragging the volume slider — they own the value.
+            // Skip while the user is dragging the volume slider  Ethey own the value.
             if (!isVolumeDragging()) setVolume(v)
         }
         "speed" -> (event.value as? Double)?.let(setSpeed)
@@ -569,7 +572,7 @@ private fun PlaylistPanel(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF12121E))
+            .background(WindColors.MediaInk)
     ) {
         Row(
             modifier = Modifier
@@ -580,13 +583,13 @@ private fun PlaylistPanel(
             Icon(
                 painter = iconPainter(PhosphorIcons.QUEUE),
                 contentDescription = null,
-                tint = Color.White,
+                tint = WindColors.MediaCream,
                 modifier = Modifier.size(16.dp)
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
                 text = "${I18n.get("playlist")} (${videoPaths.size})",
-                color = Color.White,
+                color = WindColors.MediaCream,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Bold
             )
@@ -595,12 +598,12 @@ private fun PlaylistPanel(
                 Icon(
                     painter = iconPainter(PhosphorIcons.X),
                     contentDescription = "Close",
-                    tint = Color(0xFF888888),
+                    tint = WindColors.MediaMuted,
                     modifier = Modifier.size(16.dp)
                 )
             }
         }
-        HorizontalDivider(color = Color(0xFF333366))
+        HorizontalDivider(color = WindColors.MediaCream.copy(alpha = 0.12f))
         LazyColumn(
             modifier = Modifier.fillMaxSize()
         ) {
@@ -610,7 +613,7 @@ private fun PlaylistPanel(
                 val isCurrent = index == currentIndex
                 Surface(
                     modifier = Modifier.fillMaxWidth().clickable { onJumpToFile(path) },
-                    color = if (isCurrent) Color(0xFF1A2A4E) else Color.Transparent
+                    color = if (isCurrent) WindColors.LightSignalOrange.copy(alpha = 0.15f) else Color.Transparent
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
@@ -620,13 +623,13 @@ private fun PlaylistPanel(
                             Icon(
                                 painter = iconPainter(PhosphorIcons.PLAY),
                                 contentDescription = null,
-                                tint = Color(0xFF0F84E4),
+                                tint = WindColors.LightSignalOrange,
                                 modifier = Modifier.size(14.dp)
                             )
                         } else {
                             Text(
                                 text = "${index + 1}",
-                                color = Color(0xFF666666),
+                                color = WindColors.MediaMuted,
                                 fontSize = 11.sp,
                                 modifier = Modifier.width(14.dp),
                                 textAlign = TextAlign.Center
@@ -635,7 +638,7 @@ private fun PlaylistPanel(
                         Spacer(modifier = Modifier.width(10.dp))
                         Text(
                             text = name,
-                            color = if (isCurrent) Color.White else Color(0xFFCCCCCC),
+                            color = if (isCurrent) WindColors.MediaCream else WindColors.MediaMuted,
                             fontSize = 13.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -719,7 +722,7 @@ private fun CheatsheetOverlay(onDismiss: () -> Unit) {
             ) {
                 Text(
                     text = I18n.get("keyboard_shortcuts"),
-                    color = Color.White,
+                    color = WindColors.MediaCream,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold
                 )
@@ -728,7 +731,7 @@ private fun CheatsheetOverlay(onDismiss: () -> Unit) {
                     Icon(
                         painter = iconPainter(PhosphorIcons.X),
                         contentDescription = "Close",
-                        tint = Color(0xFF888888),
+                        tint = WindColors.MediaMuted,
                         modifier = Modifier.size(16.dp)
                     )
                 }
@@ -742,7 +745,7 @@ private fun CheatsheetOverlay(onDismiss: () -> Unit) {
                     val (title, items) = shortcuts[sectionIndex]
                     Text(
                         text = title,
-                        color = Color(0xFF0F84E4),
+                        color = WindColors.LightSignalOrange,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold
                     )
@@ -754,13 +757,13 @@ private fun CheatsheetOverlay(onDismiss: () -> Unit) {
                         ) {
                             Text(
                                 text = key,
-                                color = Color(0xFFCCCCCC),
+                                color = WindColors.MediaCream,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Medium
                             )
                             Text(
                                 text = desc,
-                                color = Color(0xFF888888),
+                                color = WindColors.MediaMuted,
                                 fontSize = 11.sp
                             )
                         }

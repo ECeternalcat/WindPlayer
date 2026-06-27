@@ -105,8 +105,8 @@ fun TrackSelectionSheet(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Track Selection",
-                    color = Color.White,
+                    text = I18n.get("track_selection"),
+                    color = WindColors.MediaCream,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold
                 )
@@ -114,7 +114,7 @@ fun TrackSelectionSheet(
                     Icon(
                         painter = iconPainter(PhosphorIcons.X),
                         contentDescription = "Close",
-                        tint = Color(0xFF0F84E4),
+                        tint = WindColors.LightSignalOrange,
                         modifier = Modifier.size(18.dp)
                     )
                 }
@@ -122,8 +122,8 @@ fun TrackSelectionSheet(
 
             TabRow(
                 selectedTabIndex = selectedTab,
-                containerColor = Color(0xFF2A2A3E),
-                contentColor = Color.White
+                containerColor = WindColors.MediaSurface,
+                contentColor = WindColors.MediaCream
             ) {
                 tabTypes.forEachIndexed { index, type ->
                     Tab(
@@ -138,11 +138,11 @@ fun TrackSelectionSheet(
                                         TrackType.SUBTITLE -> PhosphorIcons.SUBTITLES
                                     }),
                                     contentDescription = type.label,
-                                    tint = if (selectedTab == index) Color.White else Color(0xFF888888),
+                                    tint = if (selectedTab == index) WindColors.LightSignalOrange else WindColors.MediaMuted,
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text(type.label, fontSize = 13.sp)
+                                Text(type.localizedLabel(), fontSize = 13.sp)
                             }
                         }
                     )
@@ -159,7 +159,7 @@ fun TrackSelectionSheet(
                 if (currentType != TrackType.VIDEO) {
                     item {
                         TrackItem(
-                            label = "None",
+                            label = I18n.get("none"),
                             isSelected = currentTrackId == null || currentTrackId <= 0,
                             onClick = {
                                 player.setProperty(currentType.mpvProp, "no")
@@ -196,11 +196,11 @@ fun TrackSelectionSheet(
                             Icon(
                                 painter = iconPainter(PhosphorIcons.PLUS),
                                 contentDescription = "Add",
-                                tint = Color(0xFF0F84E4),
+                                tint = WindColors.LightSignalOrange,
                                 modifier = Modifier.size(16.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Add External ${currentType.label}", color = Color(0xFF0F84E4), fontSize = 13.sp)
+                            Text(String.format(I18n.get("add_external"), currentType.localizedLabel()), color = WindColors.LightSignalOrange, fontSize = 13.sp)
                         }
                     }
                 }
@@ -223,25 +223,25 @@ fun TrackSelectionSheet(
                     Icon(
                         painter = iconPainter(PhosphorIcons.ARROW_LEFT),
                         contentDescription = "Back",
-                        tint = Color(0xFF0F84E4),
+                        tint = WindColors.LightSignalOrange,
                         modifier = Modifier.size(18.dp)
                     )
                 }
                 Text(
-                    text = "Add ${browseType.label}",
-                    color = Color.White,
+                    text = String.format(I18n.get("add_title"), browseType.localizedLabel()),
+                    color = WindColors.MediaCream,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold
                 )
                 TextButton(onClick = { browseMode = false }) {
-                    Text("Cancel", color = Color(0xFFAAAAAA), fontSize = 13.sp)
+                    Text(I18n.get("cancel"), color = WindColors.MediaMuted, fontSize = 13.sp)
                 }
             }
 
             if (browsePath.isNotBlank()) {
                 Text(
                     text = browsePath,
-                    color = Color(0xFF888888),
+                    color = WindColors.MediaMuted,
                     fontSize = 11.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -251,7 +251,7 @@ fun TrackSelectionSheet(
 
             if (browseLoading) {
                 Box(modifier = Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = Color(0xFF0F84E4), modifier = Modifier.size(24.dp))
+                    CircularProgressIndicator(color = WindColors.LightSignalOrange, modifier = Modifier.size(24.dp))
                 }
             } else {
                 LazyColumn(modifier = Modifier.fillMaxWidth()) {
@@ -300,6 +300,12 @@ private fun TrackType.mpvPropLabel(): String = when (this) {
     TrackType.SUBTITLE -> "sub"
 }
 
+private fun TrackType.localizedLabel(): String = when (this) {
+    TrackType.VIDEO -> I18n.get("video_track")
+    TrackType.AUDIO -> I18n.get("audio_track")
+    TrackType.SUBTITLE -> I18n.get("subtitle_track")
+}
+
 private fun trackDisplayName(track: TrackInfo): String {
     val parts = mutableListOf<String>()
     track.lang?.let { parts.add(it) }
@@ -319,20 +325,20 @@ private fun TrackItem(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .background(if (isSelected) Color(0xFF0F84E4).copy(alpha = 0.2f) else Color.Transparent)
+            .background(if (isSelected) WindColors.LightSignalOrange.copy(alpha = 0.15f) else Color.Transparent)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
             painter = iconPainter(if (isSelected) PhosphorIcons.CHECK else PhosphorIcons.CHECK),
             contentDescription = if (isSelected) "Selected" else "",
-            tint = if (isSelected) Color(0xFF0F84E4) else Color.Transparent,
+            tint = if (isSelected) WindColors.LightSignalOrange else Color.Transparent,
             modifier = Modifier.size(16.dp)
         )
         Spacer(modifier = Modifier.width(8.dp))
         Text(
             text = label,
-            color = Color.White,
+            color = WindColors.MediaCream,
             fontSize = 14.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -340,12 +346,12 @@ private fun TrackItem(
         )
         badges.forEach { badge ->
             Surface(
-                color = Color(0xFF3A3A4E),
-                shape = MaterialTheme.shapes.small
+                color = WindColors.MediaCream.copy(alpha = 0.1f),
+                shape = WindRadius.Chip
             ) {
                 Text(
                     text = badge,
-                    color = Color(0xFFAAAAAA),
+                    color = WindColors.MediaMuted,
                     fontSize = 10.sp,
                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                 )

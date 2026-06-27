@@ -2,11 +2,19 @@ package dev.windplayer
 
 import android.net.Uri
 import android.widget.Toast
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
+import androidx.compose.runtime.SideEffect
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.view.WindowInsetsControllerCompat
 import dev.windplayer.mpv.MpvPlayer
 import dev.windplayer.ui.I18n
 import dev.windplayer.ui.PlayerSettings
+import dev.windplayer.ui.ThemeMode
 import dev.windplayer.vfs.FileNode
 import dev.windplayer.vfs.ServerConfig
 import dev.windplayer.vfs.VfsProtocol
@@ -47,6 +55,9 @@ fun MobileApp(externalVideoUri: Uri? = null) {
     var localSiblings by remember { mutableStateOf<List<FileNode>>(emptyList()) }
     var playIndex by remember { mutableStateOf(0) }
     var resumePosition by remember { mutableStateOf(0.0) }
+    var resumeSid by remember { mutableStateOf<String?>(null) }
+    var resumeAid by remember { mutableStateOf<String?>(null) }
+    var resumeSpeed by remember { mutableStateOf(0.0) }
     var serverFiles by remember { mutableStateOf<List<FileNode>>(emptyList()) }
     var serverPath by remember { mutableStateOf("") }
     var serverLoading by remember { mutableStateOf(false) }
@@ -97,7 +108,7 @@ fun MobileApp(externalVideoUri: Uri? = null) {
 
     LaunchedEffect(serverError) {
         serverError?.let {
-            Toast.makeText(context, "Connect failed: $it", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, String.format(I18n.get("connect_failed"), it), Toast.LENGTH_LONG).show()
             serverError = null
         }
     }
@@ -108,7 +119,7 @@ fun MobileApp(externalVideoUri: Uri? = null) {
         if (!ServerStore.encryptionActive) {
             Toast.makeText(
                 context,
-                "Warning: device doesn't support encrypted storage — server passwords stored in plaintext",
+                I18n.get("encryption_warning"),
                 Toast.LENGTH_LONG
             ).show()
         }
@@ -132,10 +143,39 @@ fun MobileApp(externalVideoUri: Uri? = null) {
         localSiblings = emptyList()
         playIndex = 0
         resumePosition = 0.0
+        resumeSid = null
+        resumeAid = null
+        resumeSpeed = 0.0
     }
 
-    when {
-        pendingFile != null -> {
+    val configuration = LocalConfiguration.current
+    val isDark = when (settings.themeMode) {
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK -> true
+        ThemeMode.SYSTEM ->
+            (configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+                android.content.res.Configuration.UI_MODE_NIGHT_YES
+    }
+    SideEffect {
+        WindColors.applyDark(isDark)
+        val window = (context as? android.app.Activity)?.window
+        if (window != null) {
+            WindowInsetsControllerCompat(window, window.decorView).isAppearanceLightStatusBars = !isDark
+        }
+    }
+
+    MaterialTheme(
+        colorScheme = androidColorScheme(isDark),
+        typography = WindTypography
+    ) {
+        // Push the body style (carrying Sofia Sans) into LocalTextStyle so raw
+        // Text() calls inherit the family — M3 MaterialTheme doesn't do this.
+        androidx.compose.runtime.CompositionLocalProvider(
+            androidx.compose.material3.LocalTextStyle provides WindTypography.bodyLarge
+        ) {
+        Surface(modifier = Modifier.fillMaxSize(), color = WindColors.CanvasCream) {
+            when {
+                pendingFile != null -> {
             MobilePlayerScreen(
                 player = player,
                 file = pendingFile!!,
@@ -145,6 +185,9 @@ fun MobileApp(externalVideoUri: Uri? = null) {
                 currentIndex = playIndex,
                 autoPlayNext = settings.autoPlayNext,
                 resumePosition = resumePosition,
+                resumeSid = resumeSid,
+                resumeAid = resumeAid,
+                resumeSpeed = resumeSpeed,
                 onFilePlayed = { playedFile ->
                     val proto = playServerConfig?.protocol ?: VfsProtocol.LOCAL
                     val sid = playServerConfig?.id
@@ -159,6 +202,9 @@ fun MobileApp(externalVideoUri: Uri? = null) {
                 },
                 onPositionUpdate = { path, pos, dur ->
                     HistoryStore.updatePosition(context, path, pos, dur)
+                },
+                onPlaybackStateUpdate = { path, sTrack, aTrack, spd ->
+                    HistoryStore.updatePlaybackState(context, path, sTrack, aTrack, spd)
                 },
                 onBack = {
                     try { player.command("stop") } catch (_: Exception) {}
@@ -216,6 +262,9 @@ fun MobileApp(externalVideoUri: Uri? = null) {
                     directoryVideos = vids
                     playIndex = if (idx >= 0) idx else 0
                     resumePosition = 0.0
+                    resumeSid = null
+                    resumeAid = null
+                    resumeSpeed = 0.0
                 },
                 onDeleteFile = { file ->
                     scope.launch {
@@ -223,9 +272,9 @@ fun MobileApp(externalVideoUri: Uri? = null) {
                         val ok = withContext(Dispatchers.IO) { MobileVfsManager.deleteRemoteFile(srv, file.path) }
                         if (ok) {
                             serverFiles = serverFiles.filterNot { it.path == file.path }
-                            Toast.makeText(context, "Deleted", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, I18n.get("toast_deleted"), Toast.LENGTH_SHORT).show()
                         } else {
-                            Toast.makeText(context, "Delete failed", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, I18n.get("toast_delete_failed"), Toast.LENGTH_SHORT).show()
                         }
                     }
                 },
@@ -235,9 +284,9 @@ fun MobileApp(externalVideoUri: Uri? = null) {
                         val ok = withContext(Dispatchers.IO) { MobileVfsManager.renameRemoteFile(srv, file.path, newName) }
                         if (ok) {
                             serverFiles = serverFiles.map { if (it.path == file.path) it.copy(name = newName) else it }
-                            Toast.makeText(context, "Renamed", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, I18n.get("toast_renamed"), Toast.LENGTH_SHORT).show()
                         } else {
-                            Toast.makeText(context, "Rename failed", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, I18n.get("toast_rename_failed"), Toast.LENGTH_SHORT).show()
                         }
                     }
                 },
@@ -247,9 +296,9 @@ fun MobileApp(externalVideoUri: Uri? = null) {
                         val ok = withContext(Dispatchers.IO) { MobileVfsManager.moveRemoteFile(srv, file.path, destDir) }
                         if (ok) {
                             serverFiles = serverFiles.filterNot { it.path == file.path }
-                            Toast.makeText(context, "Moved", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, I18n.get("toast_moved"), Toast.LENGTH_SHORT).show()
                         } else {
-                            Toast.makeText(context, "Move failed", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, I18n.get("toast_move_failed"), Toast.LENGTH_SHORT).show()
                         }
                     }
                 }
@@ -265,6 +314,9 @@ fun MobileApp(externalVideoUri: Uri? = null) {
                 playServerConfig = null
                 playIndex = if (idx >= 0) idx else 0
                 resumePosition = 0.0
+                resumeSid = null
+                resumeAid = null
+                resumeSpeed = 0.0
             },
             onOpenSettings = { screen = "settings" },
             onAddServer = { screen = "addServer" },
@@ -308,19 +360,28 @@ fun MobileApp(externalVideoUri: Uri? = null) {
                         localSiblings = siblings
                         playIndex = idx
                         resumePosition = entry.position
+                        resumeSid = entry.selectedSid
+                        resumeAid = entry.selectedAid
+                        resumeSpeed = entry.speed
                     }
                 } else {
                     val srv = servers.firstOrNull { it.id == entry.serverId }
                     if (srv != null) {
                         pendingHistoryPlay = entry.path
                         resumePosition = entry.position
+                        resumeSid = entry.selectedSid
+                        resumeAid = entry.selectedAid
+                        resumeSpeed = entry.speed
                         activeServer = srv
                         serverPath = entry.path.substringBeforeLast('/').ifBlank { "/" }
                     } else {
-                        Toast.makeText(context, "Server not found", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, I18n.get("server_not_found"), Toast.LENGTH_SHORT).show()
                     }
                 }
             }
         )
+        }
+        }
+    }
     }
 }

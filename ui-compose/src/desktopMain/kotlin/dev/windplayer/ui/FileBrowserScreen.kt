@@ -1,16 +1,20 @@
 package dev.windplayer.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -65,24 +69,22 @@ fun FileBrowserScreen(
         )
     }
 
-    Row(modifier = modifier.fillMaxSize()) {
+    Row(modifier = modifier.fillMaxSize().background(WindColors.CanvasCream)) {
         Column(
             modifier = Modifier
-                .width(220.dp)
+                .width(240.dp)
                 .fillMaxHeight()
-                .background(Color(0xFF1A1A2E))
-                .padding(12.dp)
+                .background(WindColors.LiftedCream)
+                .padding(horizontal = 16.dp, vertical = 20.dp)
         ) {
-            Text(
-                text = I18n.get("servers"),
-                color = Color.White,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(modifier = Modifier.height(8.dp))
+            SidebarLabel(text = I18n.get("servers"))
+            Spacer(modifier = Modifier.height(10.dp))
 
-            Surface(
-                modifier = Modifier.fillMaxWidth().clickable {
+            NavItem(
+                label = I18n.get("local_files"),
+                icon = PhosphorIcons.MONITOR,
+                active = isLocal,
+                onClick = {
                     isLocal = true
                     activeServerId = null
                     currentPath = vfsManager.homeDirectory()
@@ -90,83 +92,39 @@ fun FileBrowserScreen(
                     scope.launch {
                         files = vfsManager.listLocalDirectory(currentPath)
                     }
-                },
-                color = if (isLocal) Color(0xFF2A2A4E) else Color.Transparent,
-                shape = MaterialTheme.shapes.small
-            ) {
-                Row(
-                    modifier = Modifier.padding(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        painter = iconPainter(PhosphorIcons.MONITOR),
-                        contentDescription = "Local",
-                        tint = if (isLocal) Color(0xFF0F84E4) else Color(0xFFAAAAAA),
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(text = I18n.get("local_files"), color = Color.White, fontSize = 13.sp)
                 }
-            }
+            )
 
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(modifier = Modifier.height(6.dp))
 
             if (isLocal) {
-                Surface(
-                    modifier = Modifier.fillMaxWidth().clickable {
+                NavItem(
+                    label = I18n.get("drives"),
+                    icon = PhosphorIcons.LIST,
+                    active = false,
+                    subtle = true,
+                    onClick = {
                         isLocal = true
                         activeServerId = null
                         currentPath = ""
                         breadcrumbs = listOf(Breadcrumb("Drives", ""))
                         files = vfsManager.listLocalRoots()
-                    },
-                    color = Color.Transparent,
-                    shape = MaterialTheme.shapes.small
-                ) {
-                    Row(
-                        modifier = Modifier.padding(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            painter = iconPainter(PhosphorIcons.LIST),
-                            contentDescription = "Drives",
-                            tint = Color(0xFFAAAAAA),
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(text = I18n.get("drives"), color = Color(0xFFCCCCCC), fontSize = 13.sp)
                     }
-                }
+                )
             }
 
             if (bookmarks.isNotEmpty()) {
-                HorizontalDivider(
-                    modifier = Modifier.padding(vertical = 8.dp),
-                    color = Color(0xFF333366)
+                SidebarDivider()
+                SidebarLabel(
+                    text = I18n.get("bookmarks"),
+                    leadingIcon = PhosphorIcons.STAR
                 )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        painter = iconPainter(PhosphorIcons.STAR),
-                        contentDescription = null,
-                        tint = Color(0xFFAAAAAA),
-                        modifier = Modifier.size(14.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = I18n.get("bookmarks"),
-                        color = Color.White,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(6.dp))
                 bookmarks.take(8).forEach { bmPath ->
                     val bmName = bmPath.substringAfterLast('\\').substringAfterLast('/').ifBlank { bmPath }
-                    Surface(
-                        modifier = Modifier.fillMaxWidth().clickable {
+                    BookmarkRow(
+                        name = bmName,
+                        onClick = {
                             scope.launch {
                                 isLocal = true
                                 activeServerId = null
@@ -178,121 +136,37 @@ fun FileBrowserScreen(
                                 isLoading = false
                             }
                         },
-                        color = Color.Transparent,
-                        shape = MaterialTheme.shapes.small
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(vertical = 5.dp, horizontal = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                painter = iconPainter(PhosphorIcons.FOLDER),
-                                contentDescription = null,
-                                tint = Color(0xFFFFA726),
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = bmName,
-                                color = Color(0xFFCCCCCC),
-                                fontSize = 12.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f)
-                            )
-                            if (onBookmarkRemoved != null) {
-                                IconButton(
-                                    onClick = { onBookmarkRemoved.invoke(bmPath) },
-                                    modifier = Modifier.size(20.dp)
-                                ) {
-                                    Icon(
-                                        painter = iconPainter(PhosphorIcons.X),
-                                        contentDescription = "Remove",
-                                        tint = Color(0xFF666666),
-                                        modifier = Modifier.size(12.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
+                        onRemove = if (onBookmarkRemoved != null) {
+                            { onBookmarkRemoved.invoke(bmPath) }
+                        } else null
+                    )
                 }
             }
 
             if (recentFiles.isNotEmpty()) {
-                HorizontalDivider(
-                    modifier = Modifier.padding(vertical = 8.dp),
-                    color = Color(0xFF333366)
+                SidebarDivider()
+                SidebarLabel(
+                    text = I18n.get("recent"),
+                    leadingIcon = PhosphorIcons.CLOCK
                 )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        painter = iconPainter(PhosphorIcons.CLOCK),
-                        contentDescription = null,
-                        tint = Color(0xFFAAAAAA),
-                        modifier = Modifier.size(14.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = I18n.get("recent"),
-                        color = Color.White,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(6.dp))
                 recentFiles.take(8).forEach { recent ->
-                    Surface(
-                        modifier = Modifier.fillMaxWidth().clickable {
-                            onPlayRecentFile?.invoke(recent)
-                        },
-                        color = Color.Transparent,
-                        shape = MaterialTheme.shapes.small
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(vertical = 5.dp, horizontal = 4.dp)
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    painter = iconPainter(PhosphorIcons.VIDEO),
-                                    contentDescription = null,
-                                    tint = Color(0xFF0F84E4),
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = recent.name,
-                                    color = Color(0xFFCCCCCC),
-                                    fontSize = 12.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            if (recent.position > 1.0 && recent.duration > 0) {
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = "${formatDuration(recent.position)} / ${formatDuration(recent.duration)}",
-                                    color = Color(0xFF666666),
-                                    fontSize = 10.sp,
-                                    modifier = Modifier.padding(start = 22.dp)
-                                )
-                            }
-                        }
-                    }
+                    RecentRow(
+                        recent = recent,
+                        onClick = { onPlayRecentFile?.invoke(recent) }
+                    )
                 }
             }
 
-            HorizontalDivider(
-                modifier = Modifier.padding(vertical = 8.dp),
-                color = Color(0xFF333366)
-            )
+            SidebarDivider()
 
             LazyColumn(modifier = Modifier.weight(1f)) {
                 items(serverList, key = { it.id }) { server ->
                     val isActive = activeServerId == server.id
-                    Surface(
-                        modifier = Modifier.fillMaxWidth().clickable {
+                    ServerRow(
+                        server = server,
+                        active = isActive,
+                        onClick = {
                             scope.launch {
                                 if (!vfsManager.isServerConnected(server.id)) {
                                     isLoading = true
@@ -318,99 +192,36 @@ fun FileBrowserScreen(
                                 }
                             }
                         },
-                        color = if (isActive) Color(0xFF2A2A4E) else Color.Transparent,
-                        shape = MaterialTheme.shapes.small
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = when (server.protocol) {
-                                    VfsProtocol.SFTP -> "S"
-                                    VfsProtocol.WEBDAV -> "W"
-                                    VfsProtocol.FTP -> "F"
-                                    else -> "?"
-                                },
-                                color = if (isActive) Color(0xFF0F84E4) else Color(0xFFAAAAAA),
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = server.name,
-                                    color = Color.White,
-                                    fontSize = 13.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = "${server.protocol.name} - ${server.host}",
-                                    color = Color(0xFF888888),
-                                    fontSize = 10.sp
-                                )
-                            }
-                            if (isActive) {
-                                IconButton(
-                                    onClick = {
-                                        scope.launch {
-                                            vfsManager.disconnectServer(server.id)
-                                            activeServerId = null
-                                            files = emptyList()
-                                            currentPath = ""
-                                        }
-                                    },
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Icon(
-                                        painter = iconPainter(PhosphorIcons.X),
-                                        contentDescription = "Disconnect",
-                                        tint = Color(0xFF888888),
-                                        modifier = Modifier.size(14.dp)
-                                    )
+                        onDisconnect = if (isActive) {
+                            {
+                                scope.launch {
+                                    vfsManager.disconnectServer(server.id)
+                                    activeServerId = null
+                                    files = emptyList()
+                                    currentPath = ""
                                 }
                             }
-                        }
-                    }
+                        } else null
+                    )
                 }
             }
 
 
-            Button(
+            PrimaryPillButton(
+                text = I18n.get("add_server"),
+                icon = PhosphorIcons.PLUS,
                 onClick = { showAddDialog = true },
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F84E4))
-            ) {
-                Icon(
-                    painter = iconPainter(PhosphorIcons.PLUS),
-                    contentDescription = "Add",
-                    tint = Color.White,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(text = I18n.get("add_server"), fontSize = 12.sp)
-            }
+                modifier = Modifier.fillMaxWidth()
+            )
 
             if (onOpenSettings != null) {
                 Spacer(modifier = Modifier.height(8.dp))
-                Button(
+                OutlinedPillButton(
+                    text = I18n.get("settings"),
+                    icon = PhosphorIcons.GEAR,
                     onClick = { onOpenSettings.invoke() },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF2A2A3E),
-                        contentColor = Color.White
-                    )
-                ) {
-                    Icon(
-                        painter = iconPainter(PhosphorIcons.GEAR),
-                        contentDescription = "Settings",
-                        tint = Color(0xFFAAAAAA),
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(text = I18n.get("settings"), fontSize = 12.sp)
-                }
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         }
 
@@ -418,8 +229,8 @@ fun FileBrowserScreen(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxHeight()
-                .background(Color(0xFF0F0F1A))
-                .padding(12.dp)
+                .background(WindColors.CanvasCream)
+                .padding(horizontal = 24.dp, vertical = 20.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -441,12 +252,12 @@ fun FileBrowserScreen(
                             }
                             isLoading = false
                         }
-                    }, modifier = Modifier.size(32.dp)) {
+                    }, modifier = Modifier.size(40.dp)) {
                         Icon(
                             painter = iconPainter(PhosphorIcons.ARROW_LEFT),
                             contentDescription = "Back",
-                            tint = Color.White,
-                            modifier = Modifier.size(18.dp)
+                            tint = WindColors.Ink,
+                            modifier = Modifier.size(20.dp)
                         )
                     }
                     Spacer(modifier = Modifier.width(8.dp))
@@ -458,14 +269,21 @@ fun FileBrowserScreen(
                 ) {
                     breadcrumbs.forEachIndexed { index, crumb ->
                         if (index > 0) {
-                            Text(text = " / ", color = Color(0xFF666666), fontSize = 13.sp)
+                            Text(
+                                text = " / ",
+                                color = WindColors.DustTaupe,
+                                fontSize = 14.sp,
+                                modifier = Modifier.padding(horizontal = 4.dp)
+                            )
                         }
+                        val isLast = index == breadcrumbs.lastIndex
                         Text(
                             text = crumb.name,
-                            color = if (index == breadcrumbs.lastIndex) Color.White else Color(0xFF0F84E4),
-                            fontSize = 13.sp,
+                            color = if (isLast) WindColors.Ink else WindColors.LinkBlue,
+                            fontSize = 14.sp,
+                            fontWeight = if (isLast) FontWeight.Medium else FontWeight.Normal,
                             modifier = Modifier.clickable {
-                                if (index < breadcrumbs.lastIndex) {
+                                if (!isLast) {
                                     scope.launch {
                                         breadcrumbs = breadcrumbs.subList(0, index + 1)
                                         currentPath = crumb.path
@@ -490,65 +308,71 @@ fun FileBrowserScreen(
                             if (isBookmarked) onBookmarkRemoved?.invoke(currentPath)
                             else onBookmarkAdded.invoke(currentPath)
                         },
-                        modifier = Modifier.size(28.dp)
+                        modifier = Modifier.size(40.dp)
                     ) {
                         Icon(
                             painter = iconPainter(PhosphorIcons.STAR),
                             contentDescription = "Bookmark",
-                            tint = if (isBookmarked) Color(0xFFFFA726) else Color(0xFF888888),
-                            modifier = Modifier.size(16.dp)
+                            tint = if (isBookmarked) WindColors.LightSignalOrange else WindColors.Slate,
+                            modifier = Modifier.size(20.dp)
                         )
                     }
                 }
             }
 
             Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = { searchQuery = it },
-                    placeholder = { Text(I18n.get("search"), color = Color(0xFF666666), fontSize = 12.sp) },
+                    placeholder = { Text(I18n.get("search"), color = WindColors.Slate, fontSize = 13.sp) },
                     leadingIcon = {
                         Icon(
                             painter = iconPainter(PhosphorIcons.MAGNIFYING_GLASS),
                             contentDescription = null,
-                            tint = Color(0xFF888888),
-                            modifier = Modifier.size(14.dp)
+                            tint = WindColors.Slate,
+                            modifier = Modifier.size(16.dp)
                         )
                     },
                     trailingIcon = {
                         if (searchQuery.isNotEmpty()) {
-                            IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(20.dp)) {
+                            IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(24.dp)) {
                                 Icon(
                                     painter = iconPainter(PhosphorIcons.X),
                                     contentDescription = "Clear",
-                                    tint = Color(0xFF666666),
-                                    modifier = Modifier.size(12.dp)
+                                    tint = WindColors.Slate,
+                                    modifier = Modifier.size(14.dp)
                                 )
                             }
                         }
                     },
                     singleLine = true,
-                    modifier = Modifier.weight(1f),
+                    shape = WindRadius.Pill,
+                    modifier = Modifier.weight(1f).height(48.dp),
                     textStyle = androidx.compose.ui.text.TextStyle(
-                        color = Color.White,
-                        fontSize = 12.sp
+                        color = WindColors.Ink,
+                        fontSize = 13.sp
                     ),
                     colors = TextFieldDefaults.colors(
-                        focusedContainerColor = Color(0xFF1A1A2E),
-                        unfocusedContainerColor = Color(0xFF1A1A2E),
-                        cursorColor = Color(0xFF0F84E4),
-                        focusedIndicatorColor = Color(0xFF0F84E4),
-                        unfocusedIndicatorColor = Color(0xFF333366)
+                        focusedContainerColor = WindColors.White,
+                        unfocusedContainerColor = WindColors.White,
+                        cursorColor = WindColors.Ink,
+                        focusedIndicatorColor = WindColors.Ink,
+                        unfocusedIndicatorColor = WindColors.Hairline
                     )
                 )
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.width(12.dp))
                 Box {
                     TextButton(
                         onClick = { showSortMenu = true },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                        shape = WindRadius.Pill,
+                        colors = ButtonDefaults.textButtonColors(
+                            containerColor = WindColors.White,
+                            contentColor = WindColors.Ink
+                        )
                     ) {
                         Text(
                             text = when (sortBy) {
@@ -557,13 +381,20 @@ fun FileBrowserScreen(
                                 "type" -> I18n.get("sort_type")
                                 else -> I18n.get("sort_name")
                             },
-                            color = Color(0xFFCCCCCC),
-                            fontSize = 12.sp
+                            color = WindColors.Ink,
+                            fontSize = 13.sp
+                        )
+                        Icon(
+                            painter = iconPainter(PhosphorIcons.CARET_DOWN),
+                            contentDescription = null,
+                            tint = WindColors.Slate,
+                            modifier = Modifier.size(14.dp).padding(start = 4.dp)
                         )
                         Text(
                             text = if (sortAsc) " \u2191" else " \u2193",
-                            color = Color(0xFF0F84E4),
-                            fontSize = 12.sp
+                            color = WindColors.LightSignalOrange,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
                         )
                     }
                     DropdownMenu(
@@ -595,30 +426,42 @@ fun FileBrowserScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
             if (errorText.isNotBlank()) {
-                Text(text = errorText, color = Color(0xFFFF4444), fontSize = 12.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        painter = iconPainter(PhosphorIcons.WARNING),
+                        contentDescription = null,
+                        tint = WindColors.SignalOrange,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(text = errorText, color = WindColors.SignalOrange, fontSize = 12.sp)
+                }
                 Spacer(modifier = Modifier.height(4.dp))
             }
 
             if (isLoading) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = Color(0xFF0F84E4))
+                    CircularProgressIndicator(color = WindColors.Ink)
                 }
             } else if (currentPath.isBlank() && activeServerId == null && !isLocal) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        // Ghost watermark — cream-on-cream wordmark (DESIGN.md §4),
+                        // sets the section mood without competing with the prompt.
                         Text(
-                            text = I18n.get("no_selection"),
-                            color = Color(0xFF333366),
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold
+                            text = "WindPlayer",
+                            color = WindColors.GhostWatermark,
+                            fontSize = 72.sp,
+                            fontWeight = FontWeight.Medium,
+                            letterSpacing = (-1.44).sp
                         )
-                        Spacer(modifier = Modifier.height(16.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
                         Text(
                             text = I18n.get("select_prompt"),
-                            color = Color(0xFF666666),
+                            color = WindColors.Slate,
                             fontSize = 14.sp
                         )
                     }
@@ -644,7 +487,7 @@ fun FileBrowserScreen(
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(
                             text = "${I18n.get("no_results")} \"$searchQuery\"",
-                            color = Color(0xFF666666),
+                            color = WindColors.Slate,
                             fontSize = 13.sp
                         )
                     }
@@ -742,14 +585,15 @@ fun FileBrowserScreen(
                             errorText = "Failed to delete file"
                         }
                     }
-                }) { Text(I18n.get("delete"), color = Color(0xFFFF4444)) }
+                }) { Text(I18n.get("delete"), color = WindColors.SignalOrange) }
             },
             dismissButton = {
                 TextButton(onClick = { deleteTarget = null }) { Text(I18n.get("cancel")) }
             },
-            containerColor = Color(0xFF1A1A2E),
-            titleContentColor = Color.White,
-            textContentColor = Color(0xFFCCCCCC)
+            shape = WindRadius.Stadium,
+            containerColor = WindColors.White,
+            titleContentColor = WindColors.Ink,
+            textContentColor = WindColors.Slate
         )
     }
 
@@ -762,14 +606,17 @@ fun FileBrowserScreen(
                     value = renameText,
                     onValueChange = { renameText = it },
                     singleLine = true,
+                    shape = WindRadius.Pill,
                     textStyle = androidx.compose.ui.text.TextStyle(
-                        color = Color.White,
+                        color = WindColors.Ink,
                         fontSize = 14.sp
                     ),
                     colors = TextFieldDefaults.colors(
-                        cursorColor = Color(0xFF0F84E4),
-                        focusedIndicatorColor = Color(0xFF0F84E4),
-                        unfocusedIndicatorColor = Color(0xFF333366)
+                        cursorColor = WindColors.Ink,
+                        focusedContainerColor = WindColors.CanvasCream,
+                        unfocusedContainerColor = WindColors.CanvasCream,
+                        focusedIndicatorColor = WindColors.Ink,
+                        unfocusedIndicatorColor = WindColors.Hairline
                     )
                 )
             },
@@ -803,10 +650,298 @@ fun FileBrowserScreen(
             dismissButton = {
                 TextButton(onClick = { renameTarget = null }) { Text(I18n.get("cancel")) }
             },
-            containerColor = Color(0xFF1A1A2E),
-            titleContentColor = Color.White,
-            textContentColor = Color(0xFFCCCCCC)
+            shape = WindRadius.Stadium,
+            containerColor = WindColors.White,
+            titleContentColor = WindColors.Ink,
+            textContentColor = WindColors.Slate
         )
+    }
+}
+
+@Composable
+private fun SidebarLabel(text: String, leadingIcon: String? = null) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(WindColors.SignalOrange)
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        if (leadingIcon != null) {
+            Icon(
+                painter = iconPainter(leadingIcon),
+                contentDescription = null,
+                tint = WindColors.Slate,
+                modifier = Modifier.size(14.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+        }
+        Text(
+            text = text.uppercase(),
+            color = WindColors.Slate,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 0.48.sp
+        )
+    }
+}
+
+@Composable
+private fun SidebarDivider() {
+    HorizontalDivider(
+        modifier = Modifier.padding(vertical = 12.dp),
+        thickness = 1.dp,
+        color = WindColors.Hairline
+    )
+}
+
+@Composable
+private fun NavItem(
+    label: String,
+    icon: String,
+    active: Boolean,
+    subtle: Boolean = false,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        color = if (active) WindColors.Ink else Color.Transparent,
+        shape = WindRadius.Pill
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                painter = iconPainter(icon),
+                contentDescription = label,
+                tint = if (active) WindColors.CanvasCream else WindColors.Slate,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Text(
+                text = label,
+                color = if (active) WindColors.CanvasCream else if (subtle) WindColors.Slate else WindColors.Ink,
+                fontSize = 13.sp,
+                fontWeight = if (active) FontWeight.Medium else FontWeight.Normal
+            )
+        }
+    }
+}
+
+@Composable
+private fun BookmarkRow(
+    name: String,
+    onClick: () -> Unit,
+    onRemove: (() -> Unit)?
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        color = Color.Transparent,
+        shape = WindRadius.Pill
+    ) {
+        Row(
+            modifier = Modifier.padding(vertical = 6.dp, horizontal = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                painter = iconPainter(PhosphorIcons.FOLDER),
+                contentDescription = null,
+                tint = WindColors.LightSignalOrange,
+                modifier = Modifier.size(14.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = name,
+                color = WindColors.Charcoal,
+                fontSize = 12.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            if (onRemove != null) {
+                IconButton(
+                    onClick = onRemove,
+                    modifier = Modifier.size(22.dp)
+                ) {
+                    Icon(
+                        painter = iconPainter(PhosphorIcons.X),
+                        contentDescription = "Remove",
+                        tint = WindColors.DustTaupe,
+                        modifier = Modifier.size(12.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecentRow(recent: RecentFile, onClick: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        color = Color.Transparent,
+        shape = WindRadius.Pill
+    ) {
+        Column(
+            modifier = Modifier.padding(vertical = 6.dp, horizontal = 6.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    painter = iconPainter(PhosphorIcons.VIDEO),
+                    contentDescription = null,
+                    tint = WindColors.Ink,
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = recent.name,
+                    color = WindColors.Charcoal,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            if (recent.position > 1.0 && recent.duration > 0) {
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "${formatDuration(recent.position)} / ${formatDuration(recent.duration)}",
+                    color = WindColors.Slate,
+                    fontSize = 10.sp,
+                    modifier = Modifier.padding(start = 22.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ServerRow(
+    server: ServerConfig,
+    active: Boolean,
+    onClick: () -> Unit,
+    onDisconnect: (() -> Unit)?
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        color = if (active) WindColors.Ink else Color.Transparent,
+        shape = WindRadius.Pill
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = if (active) WindColors.CanvasCream.copy(alpha = 0.15f) else WindColors.CanvasCream,
+                modifier = Modifier.size(22.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        text = when (server.protocol) {
+                            VfsProtocol.SFTP -> "S"
+                            VfsProtocol.WEBDAV -> "W"
+                            VfsProtocol.FTP -> "F"
+                            else -> "?"
+                        },
+                        color = if (active) WindColors.CanvasCream else WindColors.Slate,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = server.name,
+                    color = if (active) WindColors.CanvasCream else WindColors.Ink,
+                    fontSize = 13.sp,
+                    fontWeight = if (active) FontWeight.Medium else FontWeight.Normal,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "${server.protocol.name} - ${server.host}",
+                    color = if (active) WindColors.CanvasCream.copy(alpha = 0.6f) else WindColors.Slate,
+                    fontSize = 10.sp
+                )
+            }
+            if (onDisconnect != null) {
+                IconButton(
+                    onClick = onDisconnect,
+                    modifier = Modifier.size(26.dp)
+                ) {
+                    Icon(
+                        painter = iconPainter(PhosphorIcons.X),
+                        contentDescription = "Disconnect",
+                        tint = WindColors.CanvasCream.copy(alpha = 0.7f),
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PrimaryPillButton(
+    text: String,
+    icon: String?,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Button(
+        onClick = onClick,
+        modifier = modifier,
+        shape = WindRadius.Button,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = WindColors.Ink,
+            contentColor = WindColors.CanvasCream
+        ),
+        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp)
+    ) {
+        if (icon != null) {
+            Icon(
+                painter = iconPainter(icon),
+                contentDescription = null,
+                tint = WindColors.CanvasCream,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+        }
+        Text(text = text, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+    }
+}
+
+@Composable
+private fun OutlinedPillButton(
+    text: String,
+    icon: String?,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    OutlinedButton(
+        onClick = onClick,
+        modifier = modifier,
+        shape = WindRadius.Button,
+        colors = ButtonDefaults.outlinedButtonColors(
+            containerColor = WindColors.White,
+            contentColor = WindColors.Ink
+        ),
+        border = androidx.compose.foundation.BorderStroke(1.5.dp, WindColors.Ink),
+        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp)
+    ) {
+        if (icon != null) {
+            Icon(
+                painter = iconPainter(icon),
+                contentDescription = null,
+                tint = WindColors.Ink,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+        }
+        Text(text = text, fontSize = 13.sp, fontWeight = FontWeight.Medium)
     }
 }
 
@@ -827,19 +962,21 @@ private fun FileRow(
         else -> PhosphorIcons.FILE
     }
     val iconTint = when {
-        file.isDirectory -> Color(0xFFFFA726)
-        isVideo -> Color(0xFF0F84E4)
-        file.isSubtitle() -> Color(0xFF66BB6A)
-        else -> Color(0xFF888888)
+        file.isDirectory -> WindColors.LightSignalOrange
+        isVideo -> WindColors.Ink
+        file.isSubtitle() -> WindColors.ClayBrown
+        else -> WindColors.DustTaupe
     }
     var showMenu by remember { mutableStateOf(false) }
 
     Surface(
         modifier = Modifier.fillMaxWidth().clickable { onClick() },
-        color = Color.Transparent
+        color = Color.Transparent,
+        shape = WindRadius.Chip
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            modifier = Modifier
+                .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
@@ -852,7 +989,7 @@ private fun FileRow(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = file.name,
-                    color = Color.White,
+                    color = WindColors.Ink,
                     fontSize = 13.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -861,7 +998,7 @@ private fun FileRow(
             if (file.size > 0) {
                 Text(
                     text = formatFileSize(file.size),
-                    color = Color(0xFF888888),
+                    color = WindColors.Slate,
                     fontSize = 11.sp
                 )
             }
@@ -869,13 +1006,16 @@ private fun FileRow(
                 Spacer(modifier = Modifier.width(8.dp))
                 IconButton(
                     onClick = onPlay,
-                    modifier = Modifier.size(28.dp)
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .background(WindColors.Ink)
                 ) {
                     Icon(
                         painter = iconPainter(PhosphorIcons.PLAY),
                         contentDescription = "Play",
-                        tint = Color.White,
-                        modifier = Modifier.size(18.dp)
+                        tint = WindColors.CanvasCream,
+                        modifier = Modifier.size(16.dp)
                     )
                 }
             }
@@ -883,12 +1023,12 @@ private fun FileRow(
                 Box {
                     IconButton(
                         onClick = { showMenu = true },
-                        modifier = Modifier.size(28.dp)
+                        modifier = Modifier.size(30.dp)
                     ) {
                         Icon(
                             painter = iconPainter(PhosphorIcons.DOTS_THREE),
                             contentDescription = "More",
-                            tint = Color(0xFF888888),
+                            tint = WindColors.Slate,
                             modifier = Modifier.size(18.dp)
                         )
                     }
@@ -904,7 +1044,7 @@ private fun FileRow(
                         }
                         if (onDelete != null) {
                             DropdownMenuItem(
-                                text = { Text(I18n.get("delete"), color = Color(0xFFFF4444)) },
+                                text = { Text(I18n.get("delete"), color = WindColors.SignalOrange) },
                                 onClick = { showMenu = false; onDelete() }
                             )
                         }

@@ -1,5 +1,7 @@
 package dev.windplayer
 
+import dev.windplayer.ui.I18n
+
 import dev.windplayer.mpv.MpvPlayer
 import dev.windplayer.vfs.formatDurationOsd
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -73,12 +75,12 @@ internal class CanvasMouseController(
                     DRAG_VOLUME -> {
                         val newVol = (dragStartValue + dy * 0.5).coerceIn(0.0, 100.0).toInt()
                         try { player.setProperty("volume", newVol.toString()) } catch (_: Exception) {}
-                        osdEvents.tryEmit("Vol: $newVol%")
+                        osdEvents.tryEmit("${I18n.get("osd_vol")}: $newVol%")
                     }
                     DRAG_BRIGHTNESS -> {
                         val newBright = (dragStartValue + dy * 0.5).coerceIn(-100.0, 100.0).toInt()
                         try { player.setProperty("brightness", newBright.toString()) } catch (_: Exception) {}
-                        osdEvents.tryEmit("Brightness: $newBright")
+                        osdEvents.tryEmit("${I18n.get("osd_brightness")}: $newBright")
                     }
                 }
                 layoutManager.onMouseActivity()
@@ -154,7 +156,7 @@ internal class CanvasMouseController(
                 val vol = player.getPropertyLong("volume")
                 val newVol = (vol + delta).coerceIn(0, 100)
                 player.setProperty("volume", newVol.toString())
-                osdEvents.tryEmit("Vol: $newVol%")
+                osdEvents.tryEmit("${I18n.get("osd_vol")}: $newVol%")
                 layoutManager.onMouseActivity()
             }
         }

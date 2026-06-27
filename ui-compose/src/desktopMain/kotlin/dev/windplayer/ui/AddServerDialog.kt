@@ -8,6 +8,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.windplayer.vfs.ServerConfig
@@ -34,28 +35,34 @@ fun AddServerDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(text = if (initialConfig != null) "Edit Server" else "Add Server") },
+        shape = WindRadius.Stadium,
+        containerColor = WindColors.White,
+        titleContentColor = WindColors.Ink,
+        textContentColor = WindColors.Slate,
+        title = { Text(text = if (initialConfig != null) I18n.get("edit_server") else I18n.get("add_server")) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(
+                DialogTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text(text = "Name") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    textStyle = TextStyle(color = Color.Unspecified)
+                    label = I18n.get("name")
                 )
 
                 Box {
-                    OutlinedTextField(
+                    DialogTextField(
                         value = protocol.name,
                         onValueChange = {},
                         readOnly = true,
-                        label = { Text(text = "Protocol") },
+                        label = I18n.get("protocol"),
                         modifier = Modifier.fillMaxWidth().clickable { protocolExpanded = true },
                         trailingIcon = {
-                            TextButton(onClick = { protocolExpanded = true }) {
-                                Text(text = "v", fontSize = 10.sp, color = Color.Gray)
+                            IconButton(onClick = { protocolExpanded = true }, modifier = Modifier.size(24.dp)) {
+                                Icon(
+                                    painter = iconPainter(PhosphorIcons.CARET_DOWN),
+                                    contentDescription = "Select protocol",
+                                    tint = WindColors.Slate,
+                                    modifier = Modifier.size(16.dp)
+                                )
                             }
                         }
                     )
@@ -83,53 +90,38 @@ fun AddServerDialog(
                     }
                 }
 
-                OutlinedTextField(
+                DialogTextField(
                     value = host,
                     onValueChange = { host = it },
-                    label = { Text(text = "Host") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    textStyle = TextStyle(color = Color.Unspecified)
+                    label = I18n.get("host")
                 )
 
-                OutlinedTextField(
+                DialogTextField(
                     value = port,
                     onValueChange = {
                         port = it
                         portError = it.isNotBlank() && it.toIntOrNull() == null
                     },
-                    label = { Text(text = "Port (leave empty for default)") },
-                    singleLine = true,
-                    isError = portError,
-                    modifier = Modifier.fillMaxWidth(),
-                    textStyle = TextStyle(color = Color.Unspecified)
+                    label = I18n.get("port_hint"),
+                    isError = portError
                 )
 
-                OutlinedTextField(
+                DialogTextField(
                     value = username,
                     onValueChange = { username = it },
-                    label = { Text(text = "Username") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    textStyle = TextStyle(color = Color.Unspecified)
+                    label = I18n.get("username")
                 )
 
-                OutlinedTextField(
+                DialogTextField(
                     value = password,
                     onValueChange = { password = it },
-                    label = { Text(text = "Password") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    textStyle = TextStyle(color = Color.Unspecified)
+                    label = I18n.get("password")
                 )
 
-                OutlinedTextField(
+                DialogTextField(
                     value = basePath,
                     onValueChange = { basePath = it },
-                    label = { Text(text = "Base Path") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    textStyle = TextStyle(color = Color.Unspecified)
+                    label = I18n.get("base_path")
                 )
 
                 // H18: TLS toggle for FTP (FTPS). Default ON for new FTP servers.
@@ -140,20 +132,25 @@ fun AddServerDialog(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Use TLS (FTPS)",
+                            text = I18n.get("use_tls"),
+                            color = WindColors.Ink,
                             fontSize = 13.sp
                         )
                         Switch(
                             checked = useTls,
-                            onCheckedChange = { useTls = it }
+                            onCheckedChange = { useTls = it },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = WindColors.CanvasCream,
+                                checkedTrackColor = WindColors.Ink,
+                                checkedBorderColor = WindColors.Ink,
+                                uncheckedThumbColor = WindColors.White,
+                                uncheckedTrackColor = WindColors.DustTaupe,
+                                uncheckedBorderColor = WindColors.DustTaupe
+                            )
                         )
                     }
                     if (!useTls) {
-                        Text(
-                            text = "⚠ Plain FTP sends your password in cleartext. Anyone on your network can intercept it. Enable TLS whenever the server supports it.",
-                            color = Color(0xFFFFB74D),
-                            fontSize = 11.sp
-                        )
+                        WarningText(I18n.get("ftp_warning"))
                     }
                 }
 
@@ -161,11 +158,7 @@ fun AddServerDialog(
                 if (protocol == VfsProtocol.WEBDAV && host.isNotBlank() &&
                     !host.startsWith("https://", ignoreCase = true)
                 ) {
-                    Text(
-                        text = "⚠ HTTP WebDAV sends your password in cleartext. Prefix the host with https:// to encrypt the connection.",
-                        color = Color(0xFFFFB74D),
-                        fontSize = 11.sp
-                    )
+                    WarningText(I18n.get("webdav_warning"))
                 }
             }
         },
@@ -186,15 +179,70 @@ fun AddServerDialog(
                         ))
                     }
                 },
-                enabled = name.isNotBlank() && host.isNotBlank() && !portError
+                enabled = name.isNotBlank() && host.isNotBlank() && !portError,
+                shape = WindRadius.Button,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = WindColors.Ink,
+                    contentColor = WindColors.CanvasCream
+                )
             ) {
-                Text(text = "Save")
+                Text(text = I18n.get("save"), fontWeight = FontWeight.Medium)
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text(text = "Cancel")
+                Text(text = I18n.get("cancel"), color = WindColors.Slate)
             }
         }
     )
+}
+
+@Composable
+private fun DialogTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+    readOnly: Boolean = false,
+    isError: Boolean = false,
+    trailingIcon: @Composable (() -> Unit)? = null
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(text = label, color = WindColors.Slate) },
+        singleLine = true,
+        readOnly = readOnly,
+        isError = isError,
+        modifier = modifier.fillMaxWidth(),
+        trailingIcon = trailingIcon,
+        shape = WindRadius.Pill,
+        textStyle = TextStyle(color = WindColors.Ink, fontSize = 14.sp),
+        colors = TextFieldDefaults.colors(
+            focusedContainerColor = WindColors.CanvasCream,
+            unfocusedContainerColor = WindColors.CanvasCream,
+            cursorColor = WindColors.Ink,
+            focusedIndicatorColor = WindColors.Ink,
+            unfocusedIndicatorColor = WindColors.Hairline,
+            errorIndicatorColor = WindColors.SignalOrange
+        )
+    )
+}
+
+@Composable
+private fun WarningText(message: String) {
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+        Icon(
+            painter = iconPainter(PhosphorIcons.WARNING),
+            contentDescription = null,
+            tint = WindColors.SignalOrange,
+            modifier = Modifier.size(14.dp)
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = message,
+            color = WindColors.SignalOrange,
+            fontSize = 11.sp
+        )
+    }
 }

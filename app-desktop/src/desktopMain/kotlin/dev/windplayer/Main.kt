@@ -57,6 +57,14 @@ fun main(args: Array<String>) {
 
     val initialSettings = loadSettings()
     I18n.current = initialSettings.language
+    // Apply the colour palette BEFORE the first Compose frame so dark mode
+    // doesn't flash light on startup. App.kt keeps it in sync at runtime.
+    val initialDark = when (initialSettings.themeMode) {
+        dev.windplayer.ui.ThemeMode.LIGHT -> false
+        dev.windplayer.ui.ThemeMode.DARK -> true
+        dev.windplayer.ui.ThemeMode.SYSTEM -> dev.windplayer.ui.DesktopSystemTheme.isSystemDark()
+    }
+    dev.windplayer.ui.WindColors.applyDark(initialDark)
 
     SwingUtilities.invokeLater {
         val frame = JFrame("Wind Player")
@@ -72,7 +80,13 @@ fun main(args: Array<String>) {
         rootPanel.add(videoCanvas)
 
         val composePanel = ComposePanel()
-        composePanel.background = Color(0xFF0F0F1A.toInt())
+        // Match the Swing panel to the resolved theme (set above) so resize/load
+        // never reveals a stale cream rectangle in dark mode.
+        composePanel.background = Color(
+            dev.windplayer.ui.WindColors.CanvasCream.red,
+            dev.windplayer.ui.WindColors.CanvasCream.green,
+            dev.windplayer.ui.WindColors.CanvasCream.blue
+        )
         rootPanel.add(composePanel)
 
         frame.contentPane.add(rootPanel)
@@ -103,7 +117,7 @@ fun main(args: Array<String>) {
                     }
                     if (ext in SUBTITLE_EXTENSIONS && layoutManager.currentScreen == AppScreen.PLAYER) {
                         player.command("sub-add", file.absolutePath)
-                        osdEvents.tryEmit("Subtitle added: ${file.name}")
+                        osdEvents.tryEmit(String.format(I18n.get("subtitle_added"), file.name))
                         return true
                     }
                 }

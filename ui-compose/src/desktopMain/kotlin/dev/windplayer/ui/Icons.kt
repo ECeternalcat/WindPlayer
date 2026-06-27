@@ -38,6 +38,9 @@ object PhosphorIcons {
     const val STAR = "star"
     const val MAGNIFYING_GLASS = "magnifying-glass"
     const val DOTS_THREE = "dots-three"
+    const val CARET_DOWN = "caret-down"
+    const val WARNING = "warning"
+    const val ARROW_RIGHT = "arrow-right"
 }
 
 /**

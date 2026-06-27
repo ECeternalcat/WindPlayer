@@ -1,5 +1,7 @@
 package dev.windplayer
 
+import dev.windplayer.ui.I18n
+
 import dev.windplayer.mpv.MpvPlayer
 import dev.windplayer.vfs.formatDuration
 import dev.windplayer.vfs.formatDurationOsd
@@ -66,7 +68,7 @@ internal fun bindDesktopShortcuts(rootPane: JRootPane, ctx: DesktopShortcutConte
         if (isPlayer()) {
             player.command("cycle", "pause")
             val paused = player.getPropertyString("pause") == "yes"
-            osd.tryEmit(if (paused) "|| Paused" else "> Playing")
+            osd.tryEmit(if (paused) "|| ${I18n.get("osd_paused")}" else "> ${I18n.get("osd_playing")}")
             lm.onMouseActivity()
         }
     }
@@ -123,13 +125,13 @@ internal fun bindDesktopShortcuts(rootPane: JRootPane, ctx: DesktopShortcutConte
     bind(KeyStroke.getKeyStroke(KeyEvent.VK_PERIOD, 0), "frameStep") {
         if (isPlayer()) {
             player.command("frame-step")
-            osd.tryEmit("Frame +")
+            osd.tryEmit(I18n.get("osd_frame_plus"))
         }
     }
     bind(KeyStroke.getKeyStroke(KeyEvent.VK_COMMA, 0), "frameBackStep") {
         if (isPlayer()) {
             player.command("frame-back-step")
-            osd.tryEmit("Frame -")
+            osd.tryEmit(I18n.get("osd_frame_minus"))
         }
     }
 
@@ -144,7 +146,7 @@ internal fun bindDesktopShortcuts(rootPane: JRootPane, ctx: DesktopShortcutConte
         if (isPlayer()) {
             player.command("cycle", "mute")
             val muted = player.getPropertyString("mute") == "yes"
-            osd.tryEmit(if (muted) "Muted" else "Vol: ${player.getPropertyLong("volume")}%")
+            osd.tryEmit(if (muted) I18n.get("osd_muted") else "${I18n.get("osd_vol")}: ${player.getPropertyLong("volume")}%")
         }
     }
 
@@ -158,7 +160,7 @@ internal fun bindDesktopShortcuts(rootPane: JRootPane, ctx: DesktopShortcutConte
     bind(KeyStroke.getKeyStroke(KeyEvent.VK_BACK_SLASH, 0), "speedReset") {
         if (isPlayer()) {
             player.setProperty("speed", "1.00")
-            osd.tryEmit("Speed: 1.00x")
+            osd.tryEmit("${I18n.get("speed")}: 1.00x")
         }
     }
 
@@ -186,7 +188,7 @@ internal fun bindDesktopShortcuts(rootPane: JRootPane, ctx: DesktopShortcutConte
     bind(KeyStroke.getKeyStroke(KeyEvent.VK_Z, InputEvent.SHIFT_DOWN_MASK), "subDelayReset") {
         if (isPlayer()) {
             player.setProperty("sub-delay", "0")
-            osd.tryEmit("Sub delay: +0.0s")
+            osd.tryEmit("${I18n.get("osd_sub_delay")}: +0.0s")
         }
     }
     bind(KeyStroke.getKeyStroke(KeyEvent.VK_G, 0), "audioDelayDown") {
@@ -198,7 +200,7 @@ internal fun bindDesktopShortcuts(rootPane: JRootPane, ctx: DesktopShortcutConte
     bind(KeyStroke.getKeyStroke(KeyEvent.VK_G, InputEvent.SHIFT_DOWN_MASK), "audioDelayReset") {
         if (isPlayer()) {
             player.setProperty("audio-delay", "0")
-            osd.tryEmit("Audio delay: +0.0s")
+            osd.tryEmit("${I18n.get("osd_audio_delay")}: +0.0s")
         }
     }
 
@@ -233,7 +235,7 @@ internal fun bindDesktopShortcuts(rootPane: JRootPane, ctx: DesktopShortcutConte
             player.setProperty("contrast", "0")
             player.setProperty("saturation", "0")
             player.setProperty("gamma", "0")
-            osd.tryEmit("EQ Reset")
+            osd.tryEmit(I18n.get("eq_reset"))
         }
     }
 
@@ -242,21 +244,21 @@ internal fun bindDesktopShortcuts(rootPane: JRootPane, ctx: DesktopShortcutConte
         if (isPlayer()) {
             val pos = player.getPropertyDouble("time-pos")
             player.setProperty("ab-loop-a", "%.3f".format(pos))
-            osd.tryEmit("A-B Loop A: ${formatDuration(pos)}")
+            osd.tryEmit("${I18n.get("osd_ab_a")}: ${formatDuration(pos)}")
         }
     }
     bind(KeyStroke.getKeyStroke(KeyEvent.VK_B, InputEvent.SHIFT_DOWN_MASK), "abLoopB") {
         if (isPlayer()) {
             val pos = player.getPropertyDouble("time-pos")
             player.setProperty("ab-loop-b", "%.3f".format(pos))
-            osd.tryEmit("A-B Loop B: ${formatDuration(pos)}")
+            osd.tryEmit("${I18n.get("osd_ab_b")}: ${formatDuration(pos)}")
         }
     }
     bind(KeyStroke.getKeyStroke(KeyEvent.VK_A, InputEvent.SHIFT_DOWN_MASK), "abLoopClear") {
         if (isPlayer()) {
             player.setProperty("ab-loop-a", "no")
             player.setProperty("ab-loop-b", "no")
-            osd.tryEmit("A-B Loop Cleared")
+            osd.tryEmit(I18n.get("osd_ab_clear"))
         }
     }
 
@@ -264,7 +266,7 @@ internal fun bindDesktopShortcuts(rootPane: JRootPane, ctx: DesktopShortcutConte
     bind(KeyStroke.getKeyStroke(KeyEvent.VK_S, 0), "screenshot") {
         if (isPlayer()) {
             player.command("screenshot")
-            osd.tryEmit("Screenshot saved")
+            osd.tryEmit(I18n.get("osd_screenshot_saved"))
         }
     }
     bind(KeyStroke.getKeyStroke(KeyEvent.VK_P, 0), "togglePlaylist") {
@@ -283,14 +285,14 @@ internal fun adjustVolume(player: MpvPlayer, osd: MutableSharedFlow<String>, del
     val vol = player.getPropertyLong("volume")
     val newVol = (vol + delta).coerceIn(0, 100)
     player.setProperty("volume", newVol.toString())
-    osd.tryEmit("Vol: $newVol%")
+    osd.tryEmit("${I18n.get("osd_vol")}: $newVol%")
 }
 
 internal fun adjustSpeed(player: MpvPlayer, osd: MutableSharedFlow<String>, delta: Double) {
     val speed = player.getPropertyDouble("speed")
     val newSpeed = (speed + delta).coerceIn(0.25, 4.0)
     player.setProperty("speed", "%.2f".format(newSpeed))
-    osd.tryEmit("Speed: %.2fx".format(newSpeed))
+    osd.tryEmit("${I18n.get("speed")}: %.2fx".format(newSpeed))
 }
 
 internal fun adjustDelay(player: MpvPlayer, osd: MutableSharedFlow<String>, property: String, delta: Double) {

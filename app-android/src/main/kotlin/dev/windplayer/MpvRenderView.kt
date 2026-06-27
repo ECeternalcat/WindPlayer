@@ -30,7 +30,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 class MpvRenderView(
     context: Context,
     private val player: MpvPlayer,
-    private val onSurfaceReady: () -> Unit
+    private val onSurfaceReady: () -> Unit,
+    private val onSurfaceReattached: () -> Unit = {}
 ) : SurfaceView(context) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -80,6 +81,22 @@ class MpvRenderView(
                             onSurfaceReady()
                         } else {
                             Log.i(TAG, "surface reattached (resuming playback)")
+                            // Force mpv to re-init the video chain so it binds to
+                            // the freshly-attached surface. Without this the vo
+                            // (torn down when the surface was destroyed in the
+                            // background) never recovers → audio-only black screen.
+                            // (Network also reloads via onSurfaceReattached below,
+                            // which re-inits video too; this covers local files.)
+                            try {
+                                player.setProperty("vid", "no")
+                                player.setProperty("vid", "1")
+                            } catch (_: Exception) {}
+                            // Notify the screen AFTER the surface is bound — it
+                            // uses this to reload network streams (whose proxy
+                            // session died in the background) so loadfile runs
+                            // against a live surface instead of racing this
+                            // attach (which left video black with audio only).
+                            onSurfaceReattached()
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "Player init error", e)

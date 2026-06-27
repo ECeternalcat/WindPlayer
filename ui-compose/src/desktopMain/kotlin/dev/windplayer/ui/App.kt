@@ -1,10 +1,10 @@
 package dev.windplayer.ui
 
 import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
+import androidx.compose.material3.LocalTextStyle
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import dev.windplayer.vfs.FileNode
 import dev.windplayer.vfs.PlaybackParams
 import dev.windplayer.vfs.VfsProtocol
@@ -127,13 +127,27 @@ fun App(
         }
     }
 
+    val themeMode = state.settings.themeMode
+    val isDark = remember(themeMode) {
+        when (themeMode) {
+            ThemeMode.LIGHT -> false
+            ThemeMode.DARK -> true
+            ThemeMode.SYSTEM -> DesktopSystemTheme.isSystemDark()
+        }
+    }
+    SideEffect { WindColors.applyDark(isDark) }
+
     MaterialTheme(
-        colorScheme = darkColorScheme(
-            primary = Color(0xFF0F84E4),
-            surface = Color(0xFF0F0F1A),
-            background = Color(0xFF0F0F1A)
-        )
+        colorScheme = windColorScheme(isDark),
+        typography = WindTypography,
+        shapes = WindShapes
     ) {
+        // M3 MaterialTheme doesn't push typography into LocalTextStyle, so raw
+        // Text() calls wouldn't inherit the font. Provide bodyLarge (which now
+        // carries Sofia Sans) so every Text inherits the family.
+        androidx.compose.runtime.CompositionLocalProvider(
+            LocalTextStyle provides WindTypography.bodyLarge
+        ) {
         when (currentScreen) {
             AppScreen.BROWSER -> {
                 FileBrowserScreen(
@@ -203,6 +217,7 @@ fun App(
                     modifier = modifier
                 )
             }
+        }
         }
     }
 }

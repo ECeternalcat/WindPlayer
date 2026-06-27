@@ -11,24 +11,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.FastForward
-import androidx.compose.material.icons.filled.FastRewind
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.SkipNext
-import androidx.compose.material.icons.filled.SkipPrevious
-import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Subtitles
-import androidx.compose.material.icons.outlined.PhotoCamera
-import androidx.compose.material.icons.outlined.PlaylistPlay
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -50,6 +38,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import dev.windplayer.mpv.MpvEvent
 import dev.windplayer.mpv.MpvPlayer
+import dev.windplayer.ui.I18n
 import dev.windplayer.vfs.FileNode
 import dev.windplayer.vfs.MatchedTrackType
 import dev.windplayer.vfs.ServerConfig
@@ -62,6 +51,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -77,7 +67,11 @@ fun MobilePlayerScreen(
     autoPlayNext: Boolean = false,
     onFilePlayed: (FileNode) -> Unit = {},
     resumePosition: Double = 0.0,
-    onPositionUpdate: (String, Double, Double) -> Unit = { _, _, _ -> }
+    resumeSid: String? = null,
+    resumeAid: String? = null,
+    resumeSpeed: Double = 0.0,
+    onPositionUpdate: (String, Double, Double) -> Unit = { _, _, _ -> },
+    onPlaybackStateUpdate: (String, String?, String?, Double) -> Unit = { _, _, _, _ -> }
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -93,6 +87,8 @@ fun MobilePlayerScreen(
     var showTracks by remember { mutableStateOf(false) }
     var panelExpanded by remember { mutableStateOf(false) }
     var showPlaylist by remember { mutableStateOf(false) }
+    var longPressSpeeding by remember { mutableStateOf(false) }
+    var savedSpeedValue by remember { mutableStateOf(1.0) }
     var isDragging by remember { mutableStateOf(false) }
     var interactionCount by remember { mutableIntStateOf(0) }
     var currentIdx by remember { mutableIntStateOf(currentIndex) }
@@ -103,6 +99,13 @@ fun MobilePlayerScreen(
     var subtitlesAdded by remember { mutableStateOf(false) }
     var eofHandled by remember { mutableStateOf(false) }
     var pendingResume by remember { mutableStateOf(resumePosition) }
+    var pendingResumeSid by remember { mutableStateOf(resumeSid) }
+    var pendingResumeAid by remember { mutableStateOf(resumeAid) }
+    var pendingResumeSpeed by remember { mutableStateOf(resumeSpeed) }
+    // Set in ON_RESUME for network streams; consumed in onSurfaceReattached so
+    // the reload runs AFTER the surface is re-bound (avoids loadfile racing
+    // attachSurface → black video with audio only).
+    val pendingNetworkResume = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
 
     val audioManager = remember { context.getSystemService(android.content.Context.AUDIO_SERVICE) as AudioManager }
     var hasWriteSettings by remember { mutableStateOf(Settings.System.canWrite(context)) }
@@ -135,6 +138,12 @@ fun MobilePlayerScreen(
         // (SSH connect for SFTP). Must run on Dispatchers.IO, never Main,
         // otherwise StrictMode flags it and we risk ANR.
         withContext(Dispatchers.IO) {
+            // Capture the resume position BEFORE the resets below clear it, so we
+            // can hand it to mpv's `start` option. Seeking via `time-pos` after
+            // FileLoaded races the demuxer on HTTP streams and is silently lost
+            // → network videos resumed from 0. The `start` option makes mpv seek
+            // as part of loading (Range request during init), which is reliable.
+            val startAt = pendingResume
             try { currentPfd?.close() } catch (_: Exception) {}
             currentPfd = null
             streamSessionIds.forEach { streamProxy.closeSession(it) }
@@ -143,6 +152,9 @@ fun MobilePlayerScreen(
             subtitlesAdded = false
             eofHandled = false
             pendingResume = 0.0
+            pendingResumeSid = null
+            pendingResumeAid = null
+            pendingResumeSpeed = 0.0
 
             val isNetwork = serverConfig != null
             val loadPath = if (path.startsWith("content://")) {
@@ -175,11 +187,22 @@ fun MobilePlayerScreen(
                 }
             } catch (_: Exception) {}
 
+            // Tell mpv where to begin as part of loading. `start` is consumed on
+            // loadfile, so it must be set before the command below. For non-resume
+            // loads startAt is 0 (no-op).
+            try {
+                player.setProperty("start", if (startAt > 1.0) "%.3f".format(startAt) else "0")
+            } catch (_: Exception) {}
+
             // player.command is fine to call from IO; MpvPlayer serializes via its own lock.
             player.command("loadfile", loadPath)
             // keep-open=yes leaves the player paused at EOF; explicitly resume
             // so the next file in auto-play starts immediately.
             try { player.setProperty("pause", "no") } catch (_: Exception) {}
+            // Re-arm pendingResume so the FileLoaded handler also seeks as a
+            // fallback in case the `start` option above is ignored by the build.
+            // FileLoaded resets it to 0 after seeking, so auto-play-next is unaffected.
+            pendingResume = startAt
 
             // Background: match & download external subtitle files so they can
             // be sub-added after the main file loads. Runs after loadfile so it
@@ -253,20 +276,43 @@ fun MobilePlayerScreen(
     }
 
     /**
+     * Capture the current mpv frame as a thumbnail for [path] and persist it to
+     * history. Called on exit and on every episode transition (auto-play-next /
+     * manual skip) so that episodes left via "next" still get a cover instead of
+     * the default icon. Must run while mpv still holds [path]'s frame.
+     */
+    fun captureThumbnailForPath(path: String) {
+        try {
+            val safeName = "thumb_${path.hashCode().toString(16)}.jpg"
+            val thumbFile = java.io.File(context.cacheDir, safeName)
+            player.command("screenshot-to-file", thumbFile.absolutePath, "video")
+            if (thumbFile.exists() && thumbFile.length() > 0) {
+                HistoryStore.updateThumbnail(context, path, thumbFile.absolutePath)
+            }
+        } catch (_: Exception) {}
+    }
+
+    /**
      * Capture current frame as thumbnail (for history display), then exit.
      * Screenshot is taken BEFORE stop/dispose so the frame is still valid.
      * The ~100ms encode stall is acceptable at exit time.
      */
     fun captureThumbAndExit() {
         val curPath = directoryVideos.getOrNull(currentIdx)?.path ?: file.path
-        try {
-            val safeName = "thumb_${curPath.hashCode().toString(16)}.jpg"
-            val thumbFile = java.io.File(context.cacheDir, safeName)
-            player.command("screenshot-to-file", thumbFile.absolutePath, "video")
-            if (thumbFile.exists() && thumbFile.length() > 0) {
-                HistoryStore.updateThumbnail(context, curPath, thumbFile.absolutePath)
-            }
-        } catch (_: Exception) {}
+        // Flush the latest position/tracks so exiting between 5s polling ticks
+        // (or before the first tick) still records progress.
+        if (position > 0) {
+            try {
+                onPositionUpdate(curPath, position, duration)
+                onPlaybackStateUpdate(
+                    curPath,
+                    player.getPropertyString("sid"),
+                    player.getPropertyString("aid"),
+                    speed
+                )
+            } catch (_: Exception) {}
+        }
+        captureThumbnailForPath(curPath)
         onBack()
     }
 
@@ -276,7 +322,7 @@ fun MobilePlayerScreen(
             captureThumbAndExit()
         } else {
             backPressedOnce = true
-            Toast.makeText(context, "Press back again to exit playback", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, I18n.get("press_back_again"), Toast.LENGTH_SHORT).show()
             scope.launch {
                 delay(2000)
                 backPressedOnce = false
@@ -309,7 +355,16 @@ fun MobilePlayerScreen(
                 }
                 Lifecycle.Event.ON_RESUME -> {
                     hasWriteSettings = Settings.System.canWrite(context)
-                    try { player.setProperty("pause", "no") } catch (_: Exception) {}
+                    if (fileLoaded && serverConfig != null) {
+                        // Network streams need a reload (StreamProxy session dies
+                        // in background), but loadfile must run AFTER the surface
+                        // is re-attached or video stays black. Defer via a flag
+                        // consumed in onSurfaceReattached (surfaceCreated).
+                        // Rotation doesn't reach ON_RESUME, so it won't reload.
+                        pendingNetworkResume.set(true)
+                    } else {
+                        try { player.setProperty("pause", "no") } catch (_: Exception) {}
+                    }
                 }
                 else -> {}
             }
@@ -366,6 +421,26 @@ fun MobilePlayerScreen(
                         } catch (_: Exception) {}
                         pendingResume = 0.0
                     }
+                    // Restore saved audio track.
+                    pendingResumeAid?.let { aid ->
+                        if (aid.isNotEmpty() && aid != "no") {
+                            try { player.setProperty("aid", aid) } catch (_: Exception) {}
+                        }
+                        pendingResumeAid = null
+                    }
+                    // Restore saved subtitle track (overrides auto-select if user had one).
+                    pendingResumeSid?.let { sidVal ->
+                        try { player.setProperty("sid", sidVal) } catch (_: Exception) {}
+                        pendingResumeSid = null
+                    }
+                    // Restore saved speed.
+                    if (pendingResumeSpeed > 0 && pendingResumeSpeed != 1.0) {
+                        try {
+                            player.setProperty("speed", "%.2f".format(pendingResumeSpeed))
+                            speed = pendingResumeSpeed
+                        } catch (_: Exception) {}
+                        pendingResumeSpeed = 0.0
+                    }
                     // Auto-select first internal subtitle track if none is active.
                     scope.launch(Dispatchers.IO) {
                         try {
@@ -393,10 +468,14 @@ fun MobilePlayerScreen(
                     else if (!eofHandled && autoPlayNext && event.reason == 0) {
                         eofHandled = true
                         if (currentIdx + 1 < directoryVideos.size) {
+                            val leavingPath = directoryVideos.getOrNull(currentIdx)?.path
                             currentIdx++
                             val nextFile = directoryVideos[currentIdx]
                             osdText = ">> ${nextFile.name}"
-                            scope.launch { resolveAndLoad(nextFile.path) }
+                            scope.launch(Dispatchers.IO) {
+                                if (leavingPath != null) captureThumbnailForPath(leavingPath)
+                                resolveAndLoad(nextFile.path)
+                            }
                         } else {
                             onBack()
                         }
@@ -417,11 +496,17 @@ fun MobilePlayerScreen(
 
                 val curPath = directoryVideos.getOrNull(currentIdx)?.path
 
-                // Save playback position every ~5 seconds (25 × 200ms)
+                // Save playback position + tracks + speed every ~5 seconds
                 if (++posCounter >= 25) {
                     posCounter = 0
                     if (curPath != null && position > 0) {
                         onPositionUpdate(curPath, position, duration)
+                        try {
+                            val sid = player.getPropertyString("sid")
+                            val aid = player.getPropertyString("aid")
+                            val spd = player.getPropertyDouble("speed")
+                            onPlaybackStateUpdate(curPath, sid, aid, spd)
+                        } catch (_: Exception) {}
                     }
                 }
 
@@ -431,12 +516,16 @@ fun MobilePlayerScreen(
                     eofHandled = true
                     controlsVisible = false
                     if (autoPlayNext && currentIdx + 1 < directoryVideos.size) {
+                        val leavingPath = directoryVideos.getOrNull(currentIdx)?.path
                         currentIdx++
                         val nextFile = directoryVideos[currentIdx]
                         osdText = ">> ${nextFile.name}"
-                        scope.launch { resolveAndLoad(nextFile.path) }
+                        scope.launch(Dispatchers.IO) {
+                            if (leavingPath != null) captureThumbnailForPath(leavingPath)
+                            resolveAndLoad(nextFile.path)
+                        }
                     } else {
-                        // No next file or auto-play disabled → return to file list.
+                        // No next file or auto-play disabled ↁEreturn to file list.
                         captureThumbAndExit()
                     }
                 }
@@ -459,25 +548,33 @@ fun MobilePlayerScreen(
             val target = (pos + delta).coerceIn(0.0, dur)
             player.setProperty("time-pos", "%.3f".format(target))
             position = target
-            osdText = "${fmt(delta)} → ${formatDuration(target)} / ${formatDuration(dur)}"
+            osdText = "${fmt(delta)} ↁE${formatDuration(target)} / ${formatDuration(dur)}"
         } catch (_: Exception) {}
     }
 
     fun playNext() {
         if (currentIdx + 1 < directoryVideos.size) {
+            val leavingPath = directoryVideos.getOrNull(currentIdx)?.path
             currentIdx++
             val nextFile = directoryVideos[currentIdx]
             osdText = ">> ${nextFile.name}"
-            scope.launch { resolveAndLoad(nextFile.path) }
+            scope.launch(Dispatchers.IO) {
+                if (leavingPath != null) captureThumbnailForPath(leavingPath)
+                resolveAndLoad(nextFile.path)
+            }
         }
     }
 
     fun playPrev() {
         if (currentIdx > 0) {
+            val leavingPath = directoryVideos.getOrNull(currentIdx)?.path
             currentIdx--
             val prevFile = directoryVideos[currentIdx]
             osdText = "<< ${prevFile.name}"
-            scope.launch { resolveAndLoad(prevFile.path) }
+            scope.launch(Dispatchers.IO) {
+                if (leavingPath != null) captureThumbnailForPath(leavingPath)
+                resolveAndLoad(prevFile.path)
+            }
         }
     }
 
@@ -486,7 +583,7 @@ fun MobilePlayerScreen(
         val clamped = v.coerceIn(0, max)
         audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, clamped, 0)
         volume = (clamped.toFloat() / max * 100).toInt()
-        osdText = "Vol: $clamped/$max"
+        osdText = "${I18n.get("osd_vol")}: $clamped/$max"
     }
 
     fun setBrightness(v: Int) {
@@ -506,7 +603,7 @@ fun MobilePlayerScreen(
         }
         val window = (context as? android.app.Activity)?.window
         window?.attributes = window?.attributes?.apply { this.screenBrightness = clamped / 255f }
-        osdText = "Brightness: ${clamped * 100 / 255}%"
+        osdText = "${I18n.get("osd_brightness")}: ${clamped * 100 / 255}%"
     }
 
     fun toggleSpeed() {
@@ -514,7 +611,7 @@ fun MobilePlayerScreen(
         val idx = speeds.indexOf(speed).let { if (it < 0) 2 else it }
         speed = speeds[(idx + 1) % speeds.size]
         try { player.setProperty("speed", "%.2f".format(speed)) } catch (_: Exception) {}
-        osdText = "Speed: %.2fx".format(speed)
+        osdText = "${I18n.get("speed")}: %.2fx".format(speed)
     }
 
     Box(
@@ -567,7 +664,7 @@ fun MobilePlayerScreen(
                                     val target = (startPos + deltaSec).coerceIn(0.0, dur)
                                     position = target
                                     player.setProperty("time-pos", "%.3f".format(target))
-                                    osdText = "${fmt(deltaSec)} → ${formatDuration(target)} / ${formatDuration(dur)}"
+                                    osdText = "${fmt(deltaSec)} ↁE${formatDuration(target)} / ${formatDuration(dur)}"
                                 } catch (_: Exception) {}
                             }
                             1 -> { // vertical left = brightness
@@ -598,9 +695,56 @@ fun MobilePlayerScreen(
                         val w = size.width
                         if (offset.x < w / 2) seek(-10.0) else seek(10.0)
                         interactionCount++
-                    },
-                    onLongPress = { showTracks = true }
+                    }
                 )
+            }
+            // Long-press to 2x speed, release to restore
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val first = awaitFirstDown()
+                    val downTime = System.currentTimeMillis()
+                    val downX = first.position.x
+                    val downY = first.position.y
+                    var lastX = downX
+                    var lastY = downY
+                    var isSpeedMode = false
+
+                    while (true) {
+                        val event = withTimeoutOrNull(100L) {
+                            awaitPointerEvent()
+                        }
+                        if (event == null) {
+                            // Timeout  Echeck for long press activation
+                            if (!isSpeedMode && !isDragging && fileLoaded) {
+                                val elapsed = System.currentTimeMillis() - downTime
+                                val moved = kotlin.math.hypot(
+                                    (lastX - downX).toDouble(), (lastY - downY).toDouble()
+                                )
+                                if (elapsed > 400 && moved < 30) {
+                                    isSpeedMode = true
+                                    longPressSpeeding = true
+                                    savedSpeedValue = speed
+                                    speed = 2.0
+                                    try { player.setProperty("speed", "2.0") } catch (_: Exception) {}
+                                    osdText = "2.0x >>>"
+                                }
+                            }
+                            continue
+                        }
+                        val change = event.changes.firstOrNull() ?: continue
+                        lastX = change.position.x
+                        lastY = change.position.y
+                        if (!change.pressed) {
+                            if (isSpeedMode) {
+                                speed = savedSpeedValue
+                                try { player.setProperty("speed", "%.2f".format(savedSpeedValue)) } catch (_: Exception) {}
+                                longPressSpeeding = false
+                                osdText = ""
+                            }
+                            break
+                        }
+                    }
+                }
             }
     ) {
         AndroidView(
@@ -611,7 +755,7 @@ fun MobilePlayerScreen(
                 // loadfile via resolveAndLoad. This eliminates the previous
                 // double-open where MpvRenderView kept its own pfd alive for
                 // the whole session and resolveAndLoad opened another per
-                // auto-play-next → FD exhaustion on long playlists.
+                // auto-play-next ↁEFD exhaustion on long playlists.
                 MpvRenderView(
                     context = ctx,
                     player = player,
@@ -620,6 +764,27 @@ fun MobilePlayerScreen(
                         // once mpv is initialized and the surface is attached.
                         // resolveAndLoad opens (and closes prior) pfd on IO.
                         scope.launch { resolveAndLoad(file.path) }
+                    },
+                    onSurfaceReattached = {
+                        // Surface is bound again after background→foreground.
+                        // If ON_RESUME requested a network reload (proxy session
+                        // died), do it now — loadfile runs against a live surface
+                        // so video renders, not just audio.
+                        if (pendingNetworkResume.compareAndSet(true, false) && serverConfig != null) {
+                            val resumeAt = position
+                            val resumeSpd = speed
+                            val resumeSidVal = try { player.getPropertyString("sid") } catch (_: Exception) { null }
+                            val resumeAidVal = try { player.getPropertyString("aid") } catch (_: Exception) { null }
+                            scope.launch {
+                                pendingResume = resumeAt
+                                try {
+                                    resolveAndLoad(directoryVideos.getOrNull(currentIdx)?.path ?: file.path)
+                                } catch (_: Exception) {}
+                                pendingResumeSid = resumeSidVal
+                                pendingResumeAid = resumeAidVal
+                                pendingResumeSpeed = resumeSpd
+                            }
+                        }
                     }
                 )
             },
@@ -636,7 +801,7 @@ fun MobilePlayerScreen(
             Surface(
                 modifier = Modifier.align(Alignment.Center),
                 color = Color(0x99000000),
-                shape = RoundedCornerShape(8.dp)
+                shape = WindRadius.Consent
             ) {
                 Text(osdText, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Medium,
                     textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
@@ -649,18 +814,18 @@ fun MobilePlayerScreen(
                 // Title row
                 Surface(Modifier.fillMaxWidth(), color = Color(0x99000000)) {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back", tint = Color.White) }
+                        IconButton(onClick = onBack) { PhosphorIcon(Phosphor.ARROW_LEFT, "Back", tint = Color.White, size = 24.dp) }
                         Text(directoryVideos.getOrNull(currentIdx)?.name ?: file.name, color = Color.White, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                     }
                 }
-                // Collapsible panel row — right-aligned, slides in from right
+                // Collapsible panel row  Eright-aligned, slides in from right
                 Surface(Modifier.fillMaxWidth(), color = Color(0x99000000)) {
                     Row(
                         Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 0.dp),
                         horizontalArrangement = Arrangement.End,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // Expandable buttons — slide in from the right
+                        // Expandable buttons  Eslide in from the right
                         androidx.compose.animation.AnimatedVisibility(
                             visible = panelExpanded,
                             enter = expandHorizontally(animationSpec = tween(250), expandFrom = Alignment.End) + fadeIn(),
@@ -668,29 +833,29 @@ fun MobilePlayerScreen(
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 IconButton(onClick = ::toggleSpeed) {
-                                    Icon(Icons.Default.Speed, "Speed", tint = Color.White, modifier = Modifier.size(22.dp))
+                                    PhosphorIcon(Phosphor.GAUGE, "Speed", tint = Color.White, size = 22.dp)
                                 }
                                 IconButton(onClick = { showTracks = true }) {
-                                    Icon(Icons.Default.Subtitles, "Tracks", tint = Color.White, modifier = Modifier.size(22.dp))
+                                    PhosphorIcon(Phosphor.SUBTITLES, "Tracks", tint = Color.White, size = 22.dp)
                                 }
                                 IconButton(onClick = {
                                     player.command("screenshot", "subtitles")
-                                    osdText = "Screenshot"
+                                    osdText = I18n.get("screenshot")
                                 }) {
-                                    Icon(Icons.Outlined.PhotoCamera, "Screenshot", tint = Color.White, modifier = Modifier.size(22.dp))
+                                    PhosphorIcon(Phosphor.CAMERA, "Screenshot", tint = Color.White, size = 22.dp)
                                 }
                             }
                         }
-                        // Toggle button — always visible on the right edge
+                        // Toggle button  Ealways visible on the right edge
                         IconButton(onClick = { panelExpanded = !panelExpanded; interactionCount++ }) {
-                            Icon(
-                                if (panelExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                                "Panel", tint = Color(0xFF0F84E4), modifier = Modifier.size(28.dp)
+                            PhosphorIcon(
+                                if (panelExpanded) Phosphor.CARET_UP else Phosphor.CARET_DOWN,
+                                "Panel", tint = WindColors.LightSignalOrange, size = 28.dp
                             )
                         }
-                        // Playlist toggle — same size, opens right-side video list
+                        // Playlist toggle  Esame size, opens right-side video list
                         IconButton(onClick = { showPlaylist = !showPlaylist; interactionCount++ }) {
-                            Icon(Icons.Outlined.PlaylistPlay, "Playlist", tint = if (showPlaylist) Color(0xFF0F84E4) else Color.White, modifier = Modifier.size(28.dp))
+                            PhosphorIcon(Phosphor.QUEUE, "Playlist", tint = if (showPlaylist) WindColors.LightSignalOrange else Color.White, size = 28.dp)
                         }
                     }
                 }
@@ -710,29 +875,33 @@ fun MobilePlayerScreen(
                                 onValueChangeFinished = { player.setProperty("time-pos", "%.3f".format(position)) },
                                 valueRange = 0f..duration.toFloat(),
                                 modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                                colors = SliderDefaults.colors(thumbColor = Color(0xFF0F84E4), activeTrackColor = Color(0xFF0F84E4))
+                                colors = SliderDefaults.colors(
+                                    thumbColor = WindColors.LightSignalOrange,
+                                    activeTrackColor = WindColors.LightSignalOrange,
+                                    inactiveTrackColor = Color.White.copy(alpha = 0.25f)
+                                )
                             )
                             Text(formatDuration(duration), color = Color.White, fontSize = 11.sp)
                         }
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = { playPrev() }, enabled = currentIdx > 0) {
-                            Icon(Icons.Default.SkipPrevious, "Previous", tint = Color.White, modifier = Modifier.size(28.dp))
+                            PhosphorIcon(Phosphor.SKIP_BACK, "Previous", tint = Color.White, size = 28.dp)
                         }
                         IconButton(onClick = { seek(-10.0) }) {
-                            Icon(Icons.Default.FastRewind, "Rewind", tint = Color.White, modifier = Modifier.size(28.dp))
+                            PhosphorIcon(Phosphor.REWIND, "Rewind", tint = Color.White, size = 28.dp)
                         }
                         IconButton(onClick = {
                             player.command("cycle", "pause")
                             isPlaying = !isPlaying
                         }, modifier = Modifier.size(48.dp)) {
-                            Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, "Play", tint = Color.White, modifier = Modifier.size(36.dp))
+                            PhosphorIcon(if (isPlaying) Phosphor.PAUSE else Phosphor.PLAY, "Play", tint = Color.White, size = 36.dp)
                         }
                         IconButton(onClick = { seek(10.0) }) {
-                            Icon(Icons.Default.FastForward, "Forward", tint = Color.White, modifier = Modifier.size(28.dp))
+                            PhosphorIcon(Phosphor.FAST_FORWARD, "Forward", tint = Color.White, size = 28.dp)
                         }
                         IconButton(onClick = { playNext() }, enabled = currentIdx + 1 < directoryVideos.size) {
-                            Icon(Icons.Default.SkipNext, "Next", tint = Color.White, modifier = Modifier.size(28.dp))
+                            PhosphorIcon(Phosphor.SKIP_FORWARD, "Next", tint = Color.White, size = 28.dp)
                         }
                     }
                 }
@@ -740,20 +909,20 @@ fun MobilePlayerScreen(
         }
 
         if (!fileLoaded && errorMsg.isEmpty()) {
-            CircularProgressIndicator(Modifier.align(Alignment.Center), color = Color(0xFF0F84E4))
+            CircularProgressIndicator(Modifier.align(Alignment.Center), color = WindColors.LightSignalOrange)
         }
 
         if (errorMsg.isNotEmpty()) {
             Column(Modifier.align(Alignment.Center).padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("Playback Error", color = Color(0xFFFF4444), fontSize = 16.sp)
+                Text(I18n.get("playback_error"), color = WindColors.SignalOrange, fontSize = 16.sp)
                 Spacer(Modifier.height(8.dp))
-                Text(errorMsg, color = Color(0xFFCCCCCC), fontSize = 12.sp)
+                Text(errorMsg, color = WindColors.MediaMuted, fontSize = 12.sp)
                 Spacer(Modifier.height(16.dp))
-                Button(onClick = onBack) { Text("Back") }
+                Button(onClick = onBack) { Text(I18n.get("back")) }
             }
         }
 
-        // Right-side playlist panel — slides in from right
+        // Right-side playlist panel  Eslides in from right
         AnimatedVisibility(
             visible = showPlaylist,
             enter = slideInHorizontally(animationSpec = tween(250), initialOffsetX = { it }) + fadeIn(),
@@ -762,19 +931,19 @@ fun MobilePlayerScreen(
         ) {
             Surface(
                 Modifier.width(280.dp).fillMaxHeight(),
-                color = Color(0xE61A1A2E)
+                color = Color(0xE6141413)
             ) {
                 Column {
                     Row(
                         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Playlist (${directoryVideos.size})", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                        Text("${I18n.get("playlist")} (${directoryVideos.size})", color = WindColors.MediaCream, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                         IconButton(onClick = { showPlaylist = false }) {
-                            Icon(Icons.Default.ArrowBack, "Close", tint = Color.White, modifier = Modifier.size(20.dp))
+                            PhosphorIcon(Phosphor.X, "Close", tint = WindColors.MediaMuted, size = 20.dp)
                         }
                     }
-                    HorizontalDivider(color = Color(0xFF333366))
+                    HorizontalDivider(color = WindColors.MediaCream.copy(alpha = 0.12f))
                     LazyColumn(Modifier.weight(1f)) {
                         items(directoryVideos.size, key = { directoryVideos[it].path }) { i ->
                             val video = directoryVideos[i]
@@ -782,18 +951,22 @@ fun MobilePlayerScreen(
                             Surface(
                                 Modifier.fillMaxWidth().clickable {
                                     if (i != currentIdx) {
+                                        val leavingPath = directoryVideos.getOrNull(currentIdx)?.path
                                         currentIdx = i
                                         showPlaylist = false
-                                        scope.launch { resolveAndLoad(video.path) }
+                                        scope.launch(Dispatchers.IO) {
+                                            if (leavingPath != null) captureThumbnailForPath(leavingPath)
+                                            resolveAndLoad(video.path)
+                                        }
                                     }
                                 },
-                                color = if (isCurrent) Color(0xFF1A2A4E) else Color.Transparent
+                                color = if (isCurrent) WindColors.LightSignalOrange.copy(alpha = 0.15f) else Color.Transparent
                             ) {
                                 Row(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Text("${i + 1}", color = Color(0xFF888888), fontSize = 12.sp, modifier = Modifier.width(32.dp))
-                                    Text(video.name, color = if (isCurrent) Color(0xFF0F84E4) else Color.White, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                    Text("${i + 1}", color = WindColors.MediaMuted, fontSize = 12.sp, modifier = Modifier.width(32.dp))
+                                    Text(video.name, color = if (isCurrent) WindColors.MediaCream else WindColors.MediaMuted, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                                     if (isCurrent) {
-                                        Icon(Icons.Default.PlayArrow, "Playing", tint = Color(0xFF0F84E4), modifier = Modifier.size(20.dp))
+                                        PhosphorIcon(Phosphor.PLAY, "Playing", tint = WindColors.LightSignalOrange, size = 20.dp)
                                     }
                                 }
                             }
@@ -804,9 +977,8 @@ fun MobilePlayerScreen(
         }
     }
 
-    // Track selection
     if (showTracks) {
-        ModalBottomSheet(onDismissRequest = { showTracks = false }, containerColor = Color(0xFF1A1A2E)) {
+        ModalBottomSheet(onDismissRequest = { showTracks = false }, containerColor = WindColors.MediaInk) {
             TrackSelectionContent(
                 player = player,
                 onDismiss = { showTracks = false }
@@ -828,7 +1000,7 @@ private fun TrackSelectionContent(
     onDismiss: () -> Unit
 ) {
     var tabIndex by remember { mutableStateOf(0) }
-    val tabs = listOf("Video", "Audio", "Subtitle")
+    val tabs = listOf(I18n.get("video_track"), I18n.get("audio_track"), I18n.get("subtitle_track"))
     val scope = rememberCoroutineScope()
     val prop = when (tabIndex) { 0 -> "vid"; 1 -> "aid"; else -> "sid" }
     val trackType = when (tabIndex) { 0 -> "video"; 1 -> "audio"; else -> "sub" }
@@ -855,9 +1027,9 @@ private fun TrackSelectionContent(
     }
 
     Column(Modifier.fillMaxWidth().padding(bottom = 32.dp)) {
-        TabRow(selectedTabIndex = tabIndex, containerColor = Color(0xFF1A1A2E), contentColor = Color(0xFF0F84E4)) {
+        TabRow(selectedTabIndex = tabIndex, containerColor = WindColors.MediaInk, contentColor = WindColors.LightSignalOrange) {
             tabs.forEachIndexed { i, title ->
-                Tab(selected = tabIndex == i, onClick = { tabIndex = i }, text = { Text(title, color = if (i == tabIndex) Color(0xFF0F84E4) else Color(0xFF888888)) })
+                Tab(selected = tabIndex == i, onClick = { tabIndex = i }, text = { Text(title, color = if (i == tabIndex) WindColors.LightSignalOrange else WindColors.MediaMuted) })
             }
         }
         Spacer(Modifier.height(8.dp))
@@ -871,9 +1043,9 @@ private fun TrackSelectionContent(
                     try { player.setProperty(prop, "no") } catch (_: Exception) {}
                 }
             },
-            color = if (currentId == "no") Color(0xFF1A2A4E) else Color.Transparent
+            color = if (currentId == "no") WindColors.LightSignalOrange.copy(alpha = 0.15f) else Color.Transparent
         ) {
-            Text("Off", color = if (currentId == "no") Color(0xFF0F84E4) else Color(0xFFCCCCCC), fontSize = 14.sp, modifier = Modifier.padding(16.dp))
+            Text(I18n.get("none"), color = if (currentId == "no") WindColors.LightSignalOrange else WindColors.MediaMuted, fontSize = 14.sp, modifier = Modifier.padding(16.dp))
         }
 
         for ((tid, lang, title) in tracks) {
@@ -886,15 +1058,15 @@ private fun TrackSelectionContent(
                         try { player.setProperty(prop, tid) } catch (_: Exception) {}
                     }
                 },
-                color = if (selected) Color(0xFF1A2A4E) else Color.Transparent
+                color = if (selected) WindColors.LightSignalOrange.copy(alpha = 0.15f) else Color.Transparent
             ) {
                 Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("#$tid", color = Color(0xFF888888), fontSize = 12.sp, modifier = Modifier.width(40.dp))
+                    Text("#$tid", color = WindColors.MediaMuted, fontSize = 12.sp, modifier = Modifier.width(40.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(title.ifBlank { lang.ifBlank { "Track $tid" } }, color = Color.White, fontSize = 14.sp)
-                        if (lang.isNotEmpty() && title.isNotEmpty()) Text(lang, color = Color(0xFF888888), fontSize = 11.sp)
+                        Text(title.ifBlank { lang.ifBlank { String.format(I18n.get("track_n"), tid) } }, color = WindColors.MediaCream, fontSize = 14.sp)
+                        if (lang.isNotEmpty() && title.isNotEmpty()) Text(lang, color = WindColors.MediaMuted, fontSize = 11.sp)
                     }
-                    if (selected) Text("●", color = Color(0xFF0F84E4), fontSize = 16.sp)
+                    if (selected) PhosphorIcon(Phosphor.CHECK, null, tint = WindColors.LightSignalOrange, size = 18.dp)
                 }
             }
         }

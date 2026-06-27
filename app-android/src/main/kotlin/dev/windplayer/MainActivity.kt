@@ -32,21 +32,15 @@ class MainActivity : ComponentActivity() {
         handleIntent(intent)
 
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        // Apply the palette before the first Compose frame so dark mode doesn't
+        // flash light on startup. MobileApp keeps it in sync at runtime.
+        val night = (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+            android.content.res.Configuration.UI_MODE_NIGHT_YES
+        WindColors.applyDark(night)
         setContent {
-            MaterialTheme(
-                colorScheme = darkColorScheme(
-                    primary = Color(0xFF0F84E4),
-                    surface = Color(0xFF0F0F1A),
-                    background = Color(0xFF0F0F1A)
-                )
-            ) {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = Color(0xFF0F0F1A)
-                ) {
-                    MobileApp(externalVideoUri = pendingVideoUri.value)
-                }
-            }
+            // Theming (light/dark + status-bar appearance) is owned by MobileApp
+            // so it can react to PlayerSettings.themeMode and system config.
+            MobileApp(externalVideoUri = pendingVideoUri.value)
         }
     }
 

@@ -2,13 +2,10 @@ package dev.windplayer
 
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.WifiFind
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -20,6 +17,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.windplayer.ui.I18n
 import dev.windplayer.vfs.ServerConfig
 import dev.windplayer.vfs.VfsProtocol
 import kotlinx.coroutines.Dispatchers
@@ -54,7 +52,7 @@ fun AddServerScreen(
 
     fun buildConfig(): ServerConfig? {
         if (host.isBlank()) {
-            Toast.makeText(context, "Host required", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, I18n.get("host_required"), Toast.LENGTH_SHORT).show()
             return null
         }
         return ServerConfig(
@@ -73,37 +71,39 @@ fun AddServerScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(if (initialConfig != null) "Edit Server" else "Add Server", color = Color.White) },
+                title = {
+                    Text(
+                        if (initialConfig != null) I18n.get("edit_server") else I18n.get("add_server"),
+                        color = WindColors.Ink,
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 20.sp
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, "Back", tint = Color.White)
+                        PhosphorIcon(Phosphor.ARROW_LEFT, "Back", tint = WindColors.Ink, size = 22.dp)
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF1A1A2E))
+                actions = {
+                    TextButton(onClick = { buildConfig()?.let { onSave(it) } }) {
+                        Text(I18n.get("save"), color = WindColors.Ink, fontWeight = FontWeight.Bold)
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = WindColors.LiftedCream)
             )
         },
-        floatingActionButton = {
-            FloatingActionButton(
-                onClick = {
-                    buildConfig()?.let { onSave(it) }
-                },
-                containerColor = Color(0xFF0F84E4),
-                contentColor = Color.White
-            ) {
-                Icon(Icons.Default.Check, "Save")
-            }
-        },
-        containerColor = Color(0xFF0F0F1A)
+        containerColor = WindColors.CanvasCream
     ) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(16.dp)
+                .padding(horizontal = 20.dp, vertical = 12.dp)
                 .verticalScroll(rememberScrollState())
         ) {
-            Text("Protocol", color = Color(0xFF0F84E4), fontSize = 13.sp, fontWeight = FontWeight.Bold)
-            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            EyebrowLabel(I18n.get("protocol"))
+            Spacer(Modifier.height(8.dp))
+            Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 VfsProtocol.entries.forEach { p ->
                     FilterChip(
                         selected = protocol == p,
@@ -117,20 +117,23 @@ fun AddServerScreen(
                             }
                         },
                         label = { Text(p.name, fontSize = 11.sp) },
+                        shape = WindRadius.Pill,
                         colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = Color(0xFF0F84E4),
-                            selectedLabelColor = Color.White
+                            containerColor = WindColors.White,
+                            labelColor = WindColors.Ink,
+                            selectedContainerColor = WindColors.Ink,
+                            selectedLabelColor = WindColors.CanvasCream
                         )
                     )
                 }
             }
 
-            FieldRow("Name", name) { name = it }
-            FieldRow("Host", host) { host = it }
-            FieldRow("Port", port) { port = it.filter { c -> c.isDigit() } }
-            FieldRow("Username", username) { username = it }
-            FieldRow("Password", password, isPassword = true) { password = it }
-            FieldRow("Base Path", basePath) { basePath = it }
+            FieldRow(I18n.get("name"), name) { name = it }
+            FieldRow(I18n.get("host"), host) { host = it }
+            FieldRow(I18n.get("port"), port) { port = it.filter { c -> c.isDigit() } }
+            FieldRow(I18n.get("username"), username) { username = it }
+            FieldRow(I18n.get("password"), password, isPassword = true) { password = it }
+            FieldRow(I18n.get("base_path"), basePath) { basePath = it }
 
             // H18: TLS toggle for FTP (FTPS). SFTP is always encrypted; WebDAV
             // infers TLS from the https:// host prefix — no toggle needed.
@@ -141,8 +144,8 @@ fun AddServerScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        "Use TLS (FTPS)",
-                        color = Color.White,
+                        I18n.get("use_tls"),
+                        color = WindColors.Ink,
                         fontSize = 14.sp,
                         modifier = Modifier.weight(1f)
                     )
@@ -150,18 +153,17 @@ fun AddServerScreen(
                         checked = useTls,
                         onCheckedChange = { useTls = it },
                         colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color(0xFF0F84E4),
-                            checkedTrackColor = Color(0xFF0F84E4).copy(alpha = 0.4f)
+                            checkedThumbColor = WindColors.CanvasCream,
+                            checkedTrackColor = WindColors.Ink,
+                            checkedBorderColor = WindColors.Ink,
+                            uncheckedThumbColor = WindColors.White,
+                            uncheckedTrackColor = WindColors.DustTaupe,
+                            uncheckedBorderColor = WindColors.DustTaupe
                         )
                     )
                 }
                 if (!useTls) {
-                    Text(
-                        "⚠ Plain FTP sends your password in cleartext. Anyone on your network can intercept it. Enable TLS whenever the server supports it.",
-                        color = Color(0xFFFFB74D),
-                        fontSize = 11.sp,
-                        modifier = Modifier.padding(top = 2.dp, bottom = 4.dp)
-                    )
+                    WarningText(I18n.get("ftp_warning"))
                 }
             }
 
@@ -170,12 +172,7 @@ fun AddServerScreen(
                 !host.startsWith("https://", ignoreCase = true)
             ) {
                 Spacer(Modifier.height(8.dp))
-                Text(
-                    "⚠ HTTP WebDAV sends your password in cleartext. Prefix the host with https:// to encrypt the connection.",
-                    color = Color(0xFFFFB74D),
-                    fontSize = 11.sp,
-                    modifier = Modifier.padding(vertical = 4.dp)
-                )
+                WarningText(I18n.get("webdav_warning"))
             }
 
             Spacer(Modifier.height(16.dp))
@@ -191,33 +188,34 @@ fun AddServerScreen(
                             val files = withContext(Dispatchers.IO) {
                                 MobileVfsManager.listDirectory(config, config.basePath)
                             }
-                            testResult = "Connected: ${files.size} items found"
+                            testResult = String.format(I18n.get("connected_items"), files.size)
                         } catch (e: Exception) {
-                            testResult = "Failed: ${e.message ?: "Connection error"}"
+                            testResult = String.format(I18n.get("failed_msg"), e.message ?: I18n.get("connection_error"))
                         }
                         testing = false
                     }
                 },
                 enabled = !testing,
                 modifier = Modifier.fillMaxWidth(),
+                shape = WindRadius.Button,
                 colors = ButtonDefaults.outlinedButtonColors(
-                    contentColor = Color(0xFF0F84E4),
-                    disabledContentColor = Color(0xFF888888)
+                    containerColor = WindColors.White,
+                    contentColor = WindColors.Ink
                 ),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF333366))
+                border = androidx.compose.foundation.BorderStroke(1.5.dp, WindColors.Ink)
             ) {
                 if (testing) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(16.dp),
                         strokeWidth = 2.dp,
-                        color = Color(0xFF0F84E4)
+                        color = WindColors.Ink
                     )
                     Spacer(Modifier.width(8.dp))
-                    Text("Testing...", fontSize = 13.sp)
+                    Text(I18n.get("testing"), fontSize = 13.sp)
                 } else {
-                    Icon(Icons.Default.WifiFind, contentDescription = null, modifier = Modifier.size(18.dp))
+                    PhosphorIcon(Phosphor.PLUGS_CONNECTED, contentDescription = null, tint = WindColors.Ink, size = 18.dp)
                     Spacer(Modifier.width(8.dp))
-                    Text("Test Connection", fontSize = 13.sp)
+                    Text(I18n.get("test_connection"), fontSize = 13.sp)
                 }
             }
 
@@ -227,40 +225,73 @@ fun AddServerScreen(
                 val isSuccess = result.startsWith("Connected")
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
-                    color = if (isSuccess) Color(0xFF1A2A1A) else Color(0xFF2A1A1A),
-                    shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp)
+                    color = WindColors.White,
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.dp,
+                        if (isSuccess) WindColors.Hairline else WindColors.SignalOrange.copy(alpha = 0.4f)
+                    ),
+                    shape = WindRadius.Consent
                 ) {
                     Text(
                         text = result,
-                        color = if (isSuccess) Color(0xFF66BB6A) else Color(0xFFFF6B6B),
+                        color = if (isSuccess) WindColors.ClayBrown else WindColors.SignalOrange,
                         fontSize = 12.sp,
                         modifier = Modifier.padding(12.dp)
                     )
                 }
             }
 
-            Spacer(Modifier.height(80.dp))
+            Spacer(Modifier.height(40.dp))
         }
     }
 }
 
 @Composable
+private fun EyebrowLabel(text: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier
+                .size(6.dp)
+                .background(WindColors.SignalOrange, shape = androidx.compose.foundation.shape.CircleShape)
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text.uppercase(),
+            color = WindColors.Slate,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 0.48.sp
+        )
+    }
+}
+
+@Composable
+private fun WarningText(message: String) {
+    Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.Top) {
+        PhosphorIcon(Phosphor.WARNING, contentDescription = null, tint = WindColors.SignalOrange, size = 14.dp)
+        Spacer(Modifier.width(6.dp))
+        Text(message, color = WindColors.SignalOrange, fontSize = 11.sp)
+    }
+}
+
+@Composable
 private fun FieldRow(label: String, value: String, isPassword: Boolean = false, onChange: (String) -> Unit) {
-    Column(Modifier.padding(vertical = 4.dp)) {
-        Text(label, color = Color(0xFF888888), fontSize = 12.sp)
+    Column(Modifier.padding(vertical = 6.dp)) {
+        Text(label, color = WindColors.Slate, fontSize = 12.sp)
         OutlinedTextField(
             value = value,
             onValueChange = onChange,
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
+            shape = WindRadius.Pill,
             visualTransformation = if (isPassword) PasswordVisualTransformation() else VisualTransformation.None,
-            textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 14.sp),
+            textStyle = androidx.compose.ui.text.TextStyle(color = WindColors.Ink, fontSize = 14.sp),
             colors = TextFieldDefaults.colors(
-                focusedContainerColor = Color(0xFF1A1A2E),
-                unfocusedContainerColor = Color(0xFF1A1A2E),
-                cursorColor = Color(0xFF0F84E4),
-                focusedIndicatorColor = Color(0xFF0F84E4),
-                unfocusedIndicatorColor = Color(0xFF333366)
+                focusedContainerColor = WindColors.White,
+                unfocusedContainerColor = WindColors.White,
+                cursorColor = WindColors.Ink,
+                focusedIndicatorColor = WindColors.Ink,
+                unfocusedIndicatorColor = WindColors.Hairline
             )
         )
     }

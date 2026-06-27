@@ -98,7 +98,7 @@ internal fun showContextMenu(
         add(JMenuItem(I18n.get("reset_sub_delay")).apply {
             addActionListener {
                 player.setProperty("sub-delay", "0")
-                osdEvents.tryEmit("Sub delay: +0.0s")
+                osdEvents.tryEmit("${I18n.get("osd_sub_delay")}: +0.0s")
             }
         })
     })
@@ -128,7 +128,7 @@ internal fun showContextMenu(
         add(JMenuItem(I18n.get("reset_audio_delay")).apply {
             addActionListener {
                 player.setProperty("audio-delay", "0")
-                osdEvents.tryEmit("Audio delay: +0.0s")
+                osdEvents.tryEmit("${I18n.get("osd_audio_delay")}: +0.0s")
             }
         })
     })
@@ -142,7 +142,7 @@ internal fun showContextMenu(
                 val speed = player.getPropertyDouble("speed")
                 val newSpeed = maxOf(speed - 0.25, 0.25)
                 player.setProperty("speed", "%.2f".format(newSpeed))
-                osdEvents.tryEmit("Speed: %.2fx".format(newSpeed))
+                osdEvents.tryEmit("${I18n.get("speed")}: %.2fx".format(newSpeed))
             }
         })
         add(JMenuItem(I18n.get("faster")).apply {
@@ -150,13 +150,13 @@ internal fun showContextMenu(
                 val speed = player.getPropertyDouble("speed")
                 val newSpeed = minOf(speed + 0.25, 4.0)
                 player.setProperty("speed", "%.2f".format(newSpeed))
-                osdEvents.tryEmit("Speed: %.2fx".format(newSpeed))
+                osdEvents.tryEmit("${I18n.get("speed")}: %.2fx".format(newSpeed))
             }
         })
         add(JMenuItem(I18n.get("normal_speed")).apply {
             addActionListener {
                 player.setProperty("speed", "1.00")
-                osdEvents.tryEmit("Speed: 1.00x")
+                osdEvents.tryEmit("${I18n.get("speed")}: 1.00x")
             }
         })
     })
@@ -167,21 +167,21 @@ internal fun showContextMenu(
             addActionListener {
                 val pos = player.getPropertyDouble("time-pos")
                 player.setProperty("ab-loop-a", "%.3f".format(pos))
-                osdEvents.tryEmit("A-B Loop A: ${formatDuration(pos)}")
+                osdEvents.tryEmit("${I18n.get("osd_ab_a")}: ${formatDuration(pos)}")
             }
         })
         add(JMenuItem(I18n.get("set_b")).apply {
             addActionListener {
                 val pos = player.getPropertyDouble("time-pos")
                 player.setProperty("ab-loop-b", "%.3f".format(pos))
-                osdEvents.tryEmit("A-B Loop B: ${formatDuration(pos)}")
+                osdEvents.tryEmit("${I18n.get("osd_ab_b")}: ${formatDuration(pos)}")
             }
         })
         add(JMenuItem(I18n.get("clear_ab")).apply {
             addActionListener {
                 player.setProperty("ab-loop-a", "no")
                 player.setProperty("ab-loop-b", "no")
-                osdEvents.tryEmit("A-B Loop Cleared")
+                osdEvents.tryEmit(I18n.get("osd_ab_clear"))
             }
         })
     })
@@ -203,7 +203,7 @@ internal fun showContextMenu(
                 player.setProperty("contrast", "0")
                 player.setProperty("saturation", "0")
                 player.setProperty("gamma", "0")
-                osdEvents.tryEmit("EQ Reset")
+                osdEvents.tryEmit(I18n.get("eq_reset"))
             }
         })
     })
@@ -222,7 +222,7 @@ internal fun showContextMenu(
     popup.add(JMenuItem(I18n.get("screenshot")).apply {
         addActionListener {
             player.command("screenshot")
-            osdEvents.tryEmit("Screenshot saved")
+            osdEvents.tryEmit(I18n.get("osd_screenshot_saved"))
         }
     })
     popup.add(JMenuItem(I18n.get("shortcuts_f1")).apply {
@@ -241,7 +241,13 @@ private fun JMenu.addEqItem(
     player: MpvPlayer
 ) {
     add(JMenuItem(I18n.get(key)).apply {
-        val label = property.replaceFirstChar { it.uppercase() }
+        val label = when (property) {
+            "brightness" -> I18n.get("osd_brightness")
+            "contrast" -> I18n.get("osd_contrast")
+            "saturation" -> I18n.get("osd_saturation")
+            "gamma" -> I18n.get("osd_gamma")
+            else -> property.replaceFirstChar { it.uppercase() }
+        }
         addActionListener {
             player.command("add", property, delta.toString())
             osdEvents.tryEmit("$label: ${player.getPropertyLong(property)}")
