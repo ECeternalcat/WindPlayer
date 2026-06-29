@@ -18,10 +18,16 @@ class StreamProxy {
     private val server: HttpServer = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
     val port: Int = server.address.port
     private val sessions = mutableMapOf<String, StreamSession>()
+    // H4: keep a handle so stop() can shut the pool down. HttpServer.stop()
+    // does NOT shut down the associated Executor; the cached-pool threads are
+    // non-daemon and would keep the JVM alive on exit.
+    private val executor = java.util.concurrent.Executors.newCachedThreadPool { r ->
+        Thread(r, "StreamProxy-worker").apply { isDaemon = true }
+    }
 
     init {
         server.createContext("/stream", this::handleRequest)
-        server.executor = Executors.newCachedThreadPool()
+        server.executor = executor
         server.start()
         LOG.info("HTTP proxy started on 127.0.0.1:$port")
     }
@@ -77,10 +83,25 @@ class StreamProxy {
             var end = fileSize - 1
 
             if (rangeHeader != null && rangeHeader.startsWith("bytes=")) {
-                val parts = rangeHeader.removePrefix("bytes=").split("-")
-                start = parts[0].toLongOrNull() ?: 0
-                if (parts.size > 1 && parts[1].isNotEmpty()) {
-                    end = parts[1].toLongOrNull() ?: (fileSize - 1)
+                val rangeSpec = rangeHeader.removePrefix("bytes=")
+                // M2: reject multi-range (comma) — mpv doesn't use it.
+                if (rangeSpec.contains(",")) {
+                    exchange.responseHeaders.set("Content-Range", "bytes */$fileSize")
+                    exchange.sendResponseHeaders(416, -1)
+                    exchange.close()
+                    return
+                }
+                val parts = rangeSpec.split("-")
+                if (parts[0].isEmpty()) {
+                    // Suffix range: bytes=-N → last N bytes
+                    val suffixLen = parts.getOrNull(1)?.toLongOrNull() ?: fileSize
+                    start = (fileSize - suffixLen).coerceAtLeast(0)
+                    end = fileSize - 1
+                } else {
+                    start = parts[0].toLongOrNull() ?: 0
+                    if (parts.size > 1 && parts[1].isNotEmpty()) {
+                        end = parts[1].toLongOrNull() ?: (fileSize - 1)
+                    }
                 }
                 if (start > end || start >= fileSize) {
                     exchange.responseHeaders.set("Content-Range", "bytes */$fileSize")
@@ -137,6 +158,7 @@ class StreamProxy {
             sessions.clear()
         }
         server.stop(1)
+        executor.shutdownNow()
     }
 
     private class StreamSession(
@@ -147,9 +169,16 @@ class StreamProxy {
         private var sftp: SFTPClient? = null
         private var remoteFile: RemoteFile? = null
         private var fileSize: Long = 0
+        // H2: once closed, refuse to re-open. Without this, a handler thread
+        // that looked up the session before closeSession() can re-enter open()
+        // after close() nulled remoteFile, opening a fresh SSH connection that
+        // nobody will ever close — a connection leak per seek/switch race.
+        @Volatile
+        private var closed = false
 
         @Synchronized
         fun open(): Long {
+            if (closed) return -1
             if (remoteFile != null) return fileSize
             val client = SSHClient(createSshjConfig())
             client.addHostKeyVerifier(KnownHostsManager.verifier)
@@ -176,6 +205,7 @@ class StreamProxy {
         // thread is inside read() -> use-after-free / IllegalStateException.
         @Synchronized
         fun close() {
+            closed = true
             try { remoteFile?.close() } catch (_: Exception) {}
             try { sftp?.close() } catch (_: Exception) {}
             try { ssh?.disconnect() } catch (_: Exception) {}

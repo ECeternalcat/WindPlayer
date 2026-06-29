@@ -36,7 +36,11 @@ compose.desktop {
         nativeDistributions {
             targetFormats(org.jetbrains.compose.desktop.application.dsl.TargetFormat.Msi, org.jetbrains.compose.desktop.application.dsl.TargetFormat.Deb)
             packageName = "WindPlayer"
-            packageVersion = "0.1.0"
+            // Release pipeline passes -PpackageVersion from the git tag.
+            packageVersion = (project.findProperty("packageVersion") as? String) ?: "0.1.0"
+            windows {
+                iconFile = file("${rootProject.projectDir.absolutePath}/icons/Launcher Icons/Windows/ic_launcher_round-multi-size-256x256.ico")
+            }
         }
     }
 }

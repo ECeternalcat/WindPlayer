@@ -3,6 +3,9 @@ package dev.windplayer
 import com.sun.jna.Library
 import com.sun.jna.Native
 import com.sun.jna.Pointer
+import java.util.logging.Logger
+
+private val LOG = Logger.getLogger("dev.windplayer.Win32Api")
 
 internal const val GWL_STYLE = -16
 internal const val WS_CAPTION = 0x00C00000
@@ -32,4 +35,30 @@ internal interface Win32Api : Library {
         cy: Int,
         flags: Int
     ): Boolean
+}
+
+internal interface Kernel32Api : Library {
+    companion object {
+        val INSTANCE: Kernel32Api by lazy { Native.load("kernel32", Kernel32Api::class.java) }
+    }
+    fun SetLastError(dwErrCode: Int)
+    fun GetLastError(): Int
+}
+
+/**
+ * Wraps SetWindowLongW with failure detection.
+ *
+ * SetWindowLongW returns 0 both on success (when previous value was 0) AND
+ * on failure. Microsoft documents the only reliable way to detect failure:
+ * SetLastError(0) before the call, then check GetLastError() != 0 after.
+ * We log a warning on failure rather than silently corrupting window state.
+ */
+internal fun win32SetWindowStyle(hwnd: Pointer, nIndex: Int, newValue: Int): Int {
+    Kernel32Api.INSTANCE.SetLastError(0)
+    val prev = Win32Api.INSTANCE.SetWindowLongW(hwnd, nIndex, newValue)
+    val err = Kernel32Api.INSTANCE.GetLastError()
+    if (err != 0) {
+        LOG.warning("SetWindowLongW(index=$nIndex, value=$newValue) failed, GLE=$err")
+    }
+    return prev
 }

@@ -7,7 +7,9 @@ import java.util.logging.Logger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
@@ -29,6 +31,11 @@ class VfsManager {
     private val localClient = LocalClient()
     private val streamProxy = StreamProxy()
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // H6: serializes saveConfig's read-modify-write against concurrent
+    // addServer/removeServer. clients/_servers are already concurrent, but
+    // the file write itself is not atomic and would corrupt servers.properties
+    // under overlapping saves.
+    private val configLock = Any()
 
     private val configDir = File(System.getProperty("user.home"), ".windplayer")
     private val configFile = File(configDir, "servers.properties")
@@ -214,13 +221,22 @@ class VfsManager {
 
     /**
      * Shutdown all VFS resources. Call once on application exit.
+     *
+     * H5: we block until disconnect launches finish so SSH connections
+     * actually close before the JVM exits (fire-and-forget left zombie
+     * sessions on shutdown). runBlocking is acceptable here because this
+     * is called from windowClosing / shutdown hook, never from UI code.
      */
     fun shutdown() {
-        for ((_, client) in clients.toList()) {
-            ioScope.launch { runCatching { client.disconnect() } }
-        }
+        val toDisconnect = clients.toList()
         clients.clear()
         streamProxy.stop()
+        runBlocking {
+            for ((_, client) in toDisconnect) {
+                runCatching { client.disconnect() }
+            }
+        }
+        ioScope.cancel()
     }
 
     private suspend fun downloadSubtitle(client: VfsClient, file: FileNode): String? {
@@ -284,9 +300,10 @@ class VfsManager {
     }
 
     private fun saveConfig() {
-        try {
-            val props = Properties()
-            props.setProperty("server.count", _servers.size.toString())
+        synchronized(configLock) {
+            try {
+                val props = Properties()
+                props.setProperty("server.count", _servers.size.toString())
                 _servers.forEachIndexed { index, server ->
                     props.setProperty("server.$index.id", server.id)
                     props.setProperty("server.$index.name", server.name)
@@ -299,9 +316,10 @@ class VfsManager {
                     props.setProperty("server.$index.basePath", server.basePath)
                     props.setProperty("server.$index.useTls", server.useTls.toString())
                 }
-            FileOutputStream(configFile).use { props.store(it, "WindPlayer Server Configurations") }
-        } catch (e: Exception) {
-            LOG.warning("saveConfig failed: ${e.message}")
+                FileOutputStream(configFile).use { props.store(it, "WindPlayer Server Configurations") }
+            } catch (e: Exception) {
+                LOG.warning("saveConfig failed: ${e.message}")
+            }
         }
     }
 

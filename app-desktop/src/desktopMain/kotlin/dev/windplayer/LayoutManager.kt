@@ -44,8 +44,13 @@ internal class LayoutManager(
     private var controlsVisible = true
     private var hideTimer: Timer? = null
     private var singleClickTimer: Timer? = null
-    private var savedStyle = 0
-    private var savedBounds: Rectangle? = null
+    // M25: separate saved-state pairs for fullscreen vs PiP. The toggle methods
+    // ensure mutual exclusion today, but a future caller entering one while the
+    // other is active would clobber the shared pair and corrupt window state.
+    private var savedFsStyle = 0
+    private var savedFsBounds: Rectangle? = null
+    private var savedPipStyle = 0
+    private var savedPipBounds: Rectangle? = null
     private var pipWidth = 480
     private var pipHeight = 270
     private var dragStartScreen: Point? = null
@@ -138,11 +143,11 @@ internal class LayoutManager(
         onFullscreenChanged?.invoke(true)
 
         val hwnd = Native.getComponentPointer(frame)
-        savedStyle = Win32Api.INSTANCE.GetWindowLongW(hwnd, GWL_STYLE)
-        savedBounds = frame.bounds
+        savedFsStyle = Win32Api.INSTANCE.GetWindowLongW(hwnd, GWL_STYLE)
+        savedFsBounds = frame.bounds
 
         val strip = WS_CAPTION or WS_THICKFRAME or WS_SYSMENU or WS_MAXIMIZEBOX or WS_MINIMIZEBOX
-        Win32Api.INSTANCE.SetWindowLongW(hwnd, GWL_STYLE, savedStyle and strip.inv())
+        win32SetWindowStyle(hwnd, GWL_STYLE, savedFsStyle and strip.inv())
         Win32Api.INSTANCE.SetWindowPos(
             hwnd, Win32Api.HWND_TOPMOST, 0, 0, 0, 0,
             SWP_FRAMECHANGED or SWP_NOMOVE or SWP_NOSIZE
@@ -163,13 +168,13 @@ internal class LayoutManager(
         hideTimer = null
 
         val hwnd = Native.getComponentPointer(frame)
-        Win32Api.INSTANCE.SetWindowLongW(hwnd, GWL_STYLE, savedStyle)
+        win32SetWindowStyle(hwnd, GWL_STYLE, savedFsStyle)
         Win32Api.INSTANCE.SetWindowPos(
             hwnd, Win32Api.HWND_NOTOPMOST, 0, 0, 0, 0,
             SWP_FRAMECHANGED or SWP_NOMOVE or SWP_NOSIZE
         )
 
-        frame.bounds = savedBounds ?: Rectangle(100, 100, 1280, 720)
+        frame.bounds = savedFsBounds ?: Rectangle(100, 100, 1280, 720)
 
         videoCanvas.cursor = Cursor.getDefaultCursor()
         applyLayout()
@@ -179,11 +184,11 @@ internal class LayoutManager(
         isPip = true
 
         val hwnd = Native.getComponentPointer(frame)
-        savedStyle = Win32Api.INSTANCE.GetWindowLongW(hwnd, GWL_STYLE)
-        savedBounds = frame.bounds
+        savedPipStyle = Win32Api.INSTANCE.GetWindowLongW(hwnd, GWL_STYLE)
+        savedPipBounds = frame.bounds
 
         val strip = WS_CAPTION or WS_THICKFRAME or WS_SYSMENU or WS_MAXIMIZEBOX or WS_MINIMIZEBOX
-        Win32Api.INSTANCE.SetWindowLongW(hwnd, GWL_STYLE, savedStyle and strip.inv())
+        win32SetWindowStyle(hwnd, GWL_STYLE, savedPipStyle and strip.inv())
         Win32Api.INSTANCE.SetWindowPos(
             hwnd, Win32Api.HWND_TOPMOST, 0, 0, 0, 0,
             SWP_FRAMECHANGED or SWP_NOMOVE or SWP_NOSIZE
@@ -206,13 +211,13 @@ internal class LayoutManager(
         hideTimer = null
 
         val hwnd = Native.getComponentPointer(frame)
-        Win32Api.INSTANCE.SetWindowLongW(hwnd, GWL_STYLE, savedStyle)
+        win32SetWindowStyle(hwnd, GWL_STYLE, savedPipStyle)
         Win32Api.INSTANCE.SetWindowPos(
             hwnd, Win32Api.HWND_NOTOPMOST, 0, 0, 0, 0,
             SWP_FRAMECHANGED or SWP_NOMOVE or SWP_NOSIZE
         )
 
-        frame.bounds = savedBounds ?: Rectangle(100, 100, 1280, 720)
+        frame.bounds = savedPipBounds ?: Rectangle(100, 100, 1280, 720)
 
         videoCanvas.cursor = Cursor.getDefaultCursor()
         applyLayout()
@@ -244,7 +249,15 @@ internal class LayoutManager(
         if (!isPip || dragStartScreen == null || dragWindowStart == null) return@onEdt
         val dx = screenPoint.x - dragStartScreen!!.x
         val dy = screenPoint.y - dragStartScreen!!.y
-        frame.location = Point(dragWindowStart!!.x + dx, dragWindowStart!!.y + dy)
+        val newX = dragWindowStart!!.x + dx
+        val newY = dragWindowStart!!.y + dy
+        // M9: clamp so at least 32px of the PiP stays visible on every edge —
+        // without this the user can drag the window entirely off-screen with
+        // no way to grab it back.
+        val sb = frame.graphicsConfiguration.bounds
+        val clampedX = newX.coerceIn(sb.x + 32 - pipWidth, sb.x + sb.width - 32)
+        val clampedY = newY.coerceIn(sb.y + 32 - pipHeight, sb.y + sb.height - 32)
+        frame.location = Point(clampedX, clampedY)
     }
 
     // ------------------------------------------------------------------
@@ -294,7 +307,7 @@ internal class LayoutManager(
         singleClickTimer = Timer(250) {
             player.command("cycle", "pause")
             val paused = player.getPropertyString("pause") == "yes"
-            osd.tryEmit(if (paused) "|| Paused" else "> Playing")
+            osd.tryEmit(if (paused) "|| ${dev.windplayer.ui.I18n.get("osd_paused")}" else "> ${dev.windplayer.ui.I18n.get("osd_playing")}")
         }
         singleClickTimer?.isRepeats = false
         singleClickTimer?.start()
@@ -312,17 +325,14 @@ internal class LayoutManager(
     // ------------------------------------------------------------------
 
     fun applyLayout() = onEdt {
-        val w = rootPanel.width
-        val h = rootPanel.height
-        if (w <= 0 || h <= 0) return@onEdt
-
-        // The actual setBounds must still be DEFERRED via invokeLater even when
-        // already on EDT. applyLayout is called from inside enterFullscreen /
-        // exitPip etc. immediately after `frame.bounds = ...`; if we mutated
-        // children inline, we could re-enter Swing's internal layout mid-pass.
-        // invokeLater queues us after the current EDT cycle, letting the
-        // frame.bounds change settle first.
+        // M18: read dimensions INSIDE the invokeLater so a resize that happens
+        // between the outer call and the deferred execution uses the latest
+        // panel size, not a stale snapshot.
         SwingUtilities.invokeLater {
+            val w = rootPanel.width
+            val h = rootPanel.height
+            if (w <= 0 || h <= 0) return@invokeLater
+
             when (currentScreen) {
                 AppScreen.BROWSER, AppScreen.SETTINGS -> {
                     videoCanvas.setBounds(0, 0, 1, 1)

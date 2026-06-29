@@ -20,11 +20,24 @@ actual class MpvPlayer actual constructor() {
     private var created = false
     private var initialized = false
     private var fileLoadedBefore = false
+    // H9: guard prevents duplicate observer registration when MobilePlayerScreen
+    // re-enters composition (Browser→Player→Browser→Player). Without it, each
+    // entry adds another observer batch and every event fires N times.
+    private var observerAdded = false
+    // H3: cached eof-reached state, updated by the property observer.
+    // Reading this avoids a synchronous JNI re-entry inside the END_FILE
+    // event callback (which can deadlock if libplayer.so holds an internal
+    // mutex during event dispatch).
+    @Volatile
+    private var eofReached = false
 
     private val observer = object : MPVLib.EventObserver {
         override fun eventProperty(property: String) { _events.tryEmit(MpvEvent.PropertyChange(property, null)) }
         override fun eventProperty(property: String, value: Long) { _events.tryEmit(MpvEvent.PropertyChange(property, value)) }
-        override fun eventProperty(property: String, value: Boolean) { _events.tryEmit(MpvEvent.PropertyChange(property, value)) }
+        override fun eventProperty(property: String, value: Boolean) {
+            if (property == "eof-reached") eofReached = value
+            _events.tryEmit(MpvEvent.PropertyChange(property, value))
+        }
         override fun eventProperty(property: String, value: String) { _events.tryEmit(MpvEvent.PropertyChange(property, value)) }
         override fun eventProperty(property: String, value: Double) { _events.tryEmit(MpvEvent.PropertyChange(property, value)) }
         override fun event(eventId: Int) {
@@ -45,6 +58,11 @@ actual class MpvPlayer actual constructor() {
                     // Critical for MobilePlayerScreen auto-play: distinguishing
                     // STOP from EOF prevents auto-playing the next file when the
                     // user explicitly pressed back.
+                    //
+                    // H3: read the cached `eofReached` instead of synchronously
+                    // re-entering JNI via MPVLib.getPropertyString(). The observer
+                    // keeps the cache in sync; re-entering JNI inside the event
+                    // callback risks a native-side lock-ordering deadlock.
                     val reason = inferEndFileReason(fileLoadedBefore)
                     fileLoadedBefore = false
                     _events.tryEmit(MpvEvent.EndFile(reason))
@@ -55,8 +73,7 @@ actual class MpvPlayer actual constructor() {
     }
 
     /**
-     * Infer the mpv end_file reason via the `eof-reached` property, since the
-     * JNI bridge only hands us the bare event id.
+     * Infer the mpv end_file reason from cached observable state.
      *
      * MPV_END_FILE_REASON values (per `lib/mpv-dev/include/mpv/client.h`):
      *   0 = EOF       — natural end of file
@@ -66,23 +83,34 @@ actual class MpvPlayer actual constructor() {
      *   5 = REDIRECT  — playlist redirect (treated as EOF for our purposes)
      */
     private fun inferEndFileReason(wasLoaded: Boolean): Int {
-        return try {
-            val eof = MPVLib.getPropertyString("eof-reached") == "yes"
-            when {
-                eof -> 0
-                wasLoaded -> 2
-                else -> 4
-            }
-        } catch (_: Exception) {
-            // Property query failed — fall back to the legacy heuristic so the
-            // player still emits EndFile (UI continues to work).
-            if (wasLoaded) 0 else 4
+        // Read the observer-cached flag — NO JNI re-entry.
+        return when {
+            eofReached -> 0
+            wasLoaded -> 2
+            else -> 4
         }
     }
 
-    fun initAndroid(context: Context) { synchronized(lock) { MPVLib.addObserver(observer) } }
+    fun initAndroid(context: Context) {
+        synchronized(lock) {
+            if (observerAdded) return
+            MPVLib.addObserver(observer)
+            // Observe eof-reached so inferEndFileReason can read the cached
+            // value instead of synchronously re-entering JNI from the END_FILE
+            // callback (H3).
+            if (initialized) {
+                try { MPVLib.observeProperty("eof-reached", MPVLib.MpvFormat.MPV_FORMAT_FLAG) } catch (_: Exception) {}
+            }
+            observerAdded = true
+        }
+    }
 
-    actual fun create() { synchronized(lock) { if (!created) created = true } }
+    // M5: the common expect fun create() is a no-op stub on Android. The real
+    // entry point is createWithContext(context). Log a warning so callers that
+    // accidentally use create() (e.g. shared code) are diagnosable.
+    actual fun create() {
+        synchronized(lock) { if (!created) { Log.w(TAG, "create() called — use createWithContext(context) on Android"); created = true } }
+    }
 
     fun createWithContext(context: Context) {
         synchronized(lock) {
@@ -106,6 +134,13 @@ actual class MpvPlayer actual constructor() {
             if (!created || initialized) return
             MPVLib.init()
             initialized = true
+            // If initAndroid() ran before initialize() (typical flow:
+            // MobilePlayerScreen.LaunchedEffect fires before MpvRenderView's
+            // surfaceCreated), the eof-reached observation was deferred. Do
+            // it now that mpv is ready.
+            if (observerAdded) {
+                try { MPVLib.observeProperty("eof-reached", MPVLib.MpvFormat.MPV_FORMAT_FLAG) } catch (_: Exception) {}
+            }
             Log.i(TAG, "mpv initialized")
         }
     }
@@ -114,48 +149,61 @@ actual class MpvPlayer actual constructor() {
         synchronized(lock) {
             // removeObserver FIRST: after MPVLib.destroy(), the JNI event thread
             // may still deliver in-flight events to the observer, which would
-            // call back into MPVLib (e.g. inferEndFileReason -> getPropertyString)
-            // on a destroyed mpv context.
+            // call back into MPVLib on a destroyed mpv context.
             try { MPVLib.removeObserver(observer) } catch (_: Exception) {}
             if (initialized) { try { MPVLib.destroy() } catch (_: Exception) {}; initialized = false }
             created = false
+            observerAdded = false
+            eofReached = false
+            fileLoadedBefore = false
         }
     }
 
+    // M3: all post-dispose catch blocks now log at Log.w so "player doesn't
+    // respond" is diagnosable from logcat. Previously every exception was
+    // silently swallowed with zero signal.
     actual fun command(vararg args: String) {
-        synchronized(lock) { if (initialized) try { MPVLib.command(args) } catch (_: Exception) {} }
+        synchronized(lock) { if (initialized) try { MPVLib.command(args) } catch (e: Exception) { Log.w(TAG, "command failed", e) } }
     }
 
     actual fun setOption(key: String, value: String) {
-        synchronized(lock) { if (created) try { MPVLib.setOptionString(key, value) } catch (_: Exception) {} }
+        synchronized(lock) { if (created) try { MPVLib.setOptionString(key, value) } catch (e: Exception) { Log.w(TAG, "setOption($key) failed", e) } }
     }
 
     actual fun setOption(key: String, value: Long) {
-        synchronized(lock) { if (created) try { MPVLib.setOptionString(key, value.toString()) } catch (_: Exception) {} }
+        synchronized(lock) { if (created) try { MPVLib.setOptionString(key, value.toString()) } catch (e: Exception) { Log.w(TAG, "setOption($key=$value) failed", e) } }
     }
 
     actual fun setProperty(key: String, value: String) {
-        synchronized(lock) { if (initialized) try { MPVLib.setPropertyString(key, value) } catch (_: Exception) {} }
+        synchronized(lock) { if (initialized) try { MPVLib.setPropertyString(key, value) } catch (e: Exception) { Log.w(TAG, "setProperty($key) failed", e) } }
     }
 
     actual fun setProperty(key: String, value: Long) {
-        synchronized(lock) { if (initialized) try { MPVLib.setPropertyString(key, value.toString()) } catch (_: Exception) {} }
+        synchronized(lock) { if (initialized) try { MPVLib.setPropertyString(key, value.toString()) } catch (e: Exception) { Log.w(TAG, "setProperty($key=$value) failed", e) } }
     }
 
     actual fun getPropertyString(name: String): String? {
-        synchronized(lock) { if (!initialized) return null; return try { MPVLib.getPropertyString(name) } catch (_: Exception) { null } }
+        synchronized(lock) { if (!initialized) return null; return try { MPVLib.getPropertyString(name) } catch (e: Exception) { Log.w(TAG, "getPropertyString($name) failed", e); null } }
     }
 
     actual fun getPropertyLong(name: String): Long {
-        synchronized(lock) { if (!initialized) return 0L; return try { MPVLib.getPropertyInt(name)?.toLong() ?: 0L } catch (_: Exception) { 0L } }
+        synchronized(lock) { if (!initialized) return 0L; return try { MPVLib.getPropertyInt(name)?.toLong() ?: 0L } catch (e: Exception) { Log.w(TAG, "getPropertyLong($name) failed", e); 0L } }
     }
 
     actual fun getPropertyDouble(name: String): Double {
-        synchronized(lock) { if (!initialized) return 0.0; return try { MPVLib.getPropertyDouble(name) ?: 0.0 } catch (_: Exception) { 0.0 } }
+        synchronized(lock) { if (!initialized) return 0.0; return try { MPVLib.getPropertyDouble(name) ?: 0.0 } catch (e: Exception) { Log.w(TAG, "getPropertyDouble($name) failed", e); 0.0 } }
     }
 
     actual fun observeProperty(name: String, format: MpvFormat) {
-        synchronized(lock) { if (initialized) try { MPVLib.observeProperty(name, format.ordinal) } catch (_: Exception) {} }
+        synchronized(lock) { if (initialized) try { MPVLib.observeProperty(name, format.ordinal) } catch (e: Exception) { Log.w(TAG, "observeProperty($name) failed", e) } }
+    }
+
+    actual fun clearPropertyObservers() {
+        // Android uses MPVLib.addObserver guarded by `observerAdded` (H9) —
+        // property observers don't accumulate the way desktop's do. Just
+        // reset the eof cache so a stale value from a previous session
+        // doesn't leak into the next END_FILE inference.
+        synchronized(lock) { eofReached = false }
     }
 
     fun isCreated(): Boolean = synchronized(lock) { created }

@@ -78,9 +78,10 @@ Two GitHub Actions workflows exist:
   pass without it. Running `:app-desktop:run` locally requires `libmpv-2.dll`
   (or `.so`/`.dylib`) in `lib/mpv-dev/`.
 
-- **JDK 21** is the canonical version (matches `gradle.properties` and CI).
+- **JDK 21** is the canonical version (enforced by CI via `actions/setup-java`).
   JDK 17 also works for Android builds (per `app-android/build.gradle.kts`
-  `compileOptions`).
+  `compileOptions`). `gradle.properties` does not pin the JDK version —
+  the 21 requirement is CI-only.
 
 - **`KnownHostsManager`** fails closed. SSH connections use TOFU
   (`TofuHostKeyVerifier`) backed by `~/.windplayer/known_hosts`. If the

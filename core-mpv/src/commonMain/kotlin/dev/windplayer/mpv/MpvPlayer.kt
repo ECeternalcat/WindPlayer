@@ -15,6 +15,12 @@ expect class MpvPlayer() {
     fun getPropertyLong(name: String): Long
     fun getPropertyDouble(name: String): Double
     fun observeProperty(name: String, format: MpvFormat)
+    /**
+     * Remove all property observers registered via [observeProperty].
+     * Call on player screen teardown to prevent observer accumulation
+     * across repeated Browser→Player transitions (H8).
+     */
+    fun clearPropertyObservers()
     val events: SharedFlow<MpvEvent>
 }
 

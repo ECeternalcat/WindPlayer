@@ -134,10 +134,22 @@ class StreamProxy {
 
                 if (rangeHeader != null && rangeHeader.startsWith("bytes=")) {
                     val rangeSpec = rangeHeader.removePrefix("bytes=")
+                    // M2: reject multi-range; handle suffix range bytes=-N.
+                    if (rangeSpec.contains(",")) {
+                        sendRangeNotSatisfiable(out, fileSize)
+                        return
+                    }
                     val rangeParts = rangeSpec.split("-")
-                    start = rangeParts[0].toLongOrNull() ?: 0
-                    if (rangeParts.size > 1 && rangeParts[1].isNotEmpty()) {
-                        end = rangeParts[1].toLongOrNull() ?: (fileSize - 1)
+                    if (rangeParts[0].isEmpty()) {
+                        // Suffix range: bytes=-N → last N bytes
+                        val suffixLen = rangeParts.getOrNull(1)?.toLongOrNull() ?: fileSize
+                        start = (fileSize - suffixLen).coerceAtLeast(0)
+                        end = fileSize - 1
+                    } else {
+                        start = rangeParts[0].toLongOrNull() ?: 0
+                        if (rangeParts.size > 1 && rangeParts[1].isNotEmpty()) {
+                            end = rangeParts[1].toLongOrNull() ?: (fileSize - 1)
+                        }
                     }
                     if (start > end || start >= fileSize) {
                         sendRangeNotSatisfiable(out, fileSize)
@@ -239,9 +251,14 @@ class StreamProxy {
         private var sftp: SFTPClient? = null
         private var remoteFile: RemoteFile? = null
         private var fileSize: Long = 0
+        // H2: once closed, refuse to re-open (prevents handler-thread re-open
+        // after closeSession leaking a fresh SSH connection).
+        @Volatile
+        private var closed = false
 
         @Synchronized
         fun open(): Long {
+            if (closed) return -1
             if (remoteFile != null) return fileSize
             val client = SSHClient(createSshjConfig())
             client.addHostKeyVerifier(KnownHostsManager.verifier)
@@ -265,6 +282,7 @@ class StreamProxy {
 
         @Synchronized
         fun close() {
+            closed = true
             try { remoteFile?.close() } catch (_: Exception) {}
             try { sftp?.close() } catch (_: Exception) {}
             try { ssh?.disconnect() } catch (_: Exception) {}

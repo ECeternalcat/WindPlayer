@@ -2,6 +2,7 @@ package `is`.xyz.mpv
 
 import android.content.Context
 import android.view.Surface
+import java.util.concurrent.CopyOnWriteArrayList
 
 @Suppress("unused")
 object MPVLib {
@@ -30,32 +31,34 @@ object MPVLib {
 
     external fun observeProperty(property: String, format: Int)
 
-    private val observers = mutableListOf<EventObserver>()
+    // CopyOnWriteArrayList: safe to iterate concurrently with add/remove.
+    // This removes the per-event `toList()` snapshot allocation on the JNI
+    // event thread (matters during seek bursts of property-change events)
+    // and the dispatch can run directly on the live list.
+    private val observers = CopyOnWriteArrayList<EventObserver>()
 
     @JvmStatic
-    fun addObserver(o: EventObserver) { synchronized(observers) { observers.add(o) } }
+    fun addObserver(o: EventObserver) { observers.addIfAbsent(o) }
     @JvmStatic
-    fun removeObserver(o: EventObserver) { synchronized(observers) { observers.remove(o) } }
+    fun removeObserver(o: EventObserver) { observers.remove(o) }
 
-    // Snapshot under the lock, dispatch outside. Holding the monitor while
-    // calling an observer would deadlock if the observer re-enters MPVLib
-    // (e.g. MpvPlayer.inferEndFileReason -> getPropertyString) while another
-    // thread holds an internal libplayer lock and waits on `observers`.
-    @JvmStatic fun eventProperty(property: String, value: Long) { for (o in snapshot()) o.eventProperty(property, value) }
-    @JvmStatic fun eventProperty(property: String, value: Boolean) { for (o in snapshot()) o.eventProperty(property, value) }
-    @JvmStatic fun eventProperty(property: String, value: Double) { for (o in snapshot()) o.eventProperty(property, value) }
-    @JvmStatic fun eventProperty(property: String, value: String) { for (o in snapshot()) o.eventProperty(property, value) }
-    @JvmStatic fun eventProperty(property: String) { for (o in snapshot()) o.eventProperty(property) }
-    @JvmStatic fun event(eventId: Int) { for (o in snapshot()) o.event(eventId) }
+    // Dispatch iterates the COW list directly — no lock held, no allocation.
+    // Holding a monitor while calling an observer would deadlock if the
+    // observer re-enters MPVLib (e.g. MpvPlayer.inferEndFileReason ->
+    // getPropertyString) while another thread holds an internal libplayer
+    // lock and waits on `observers`.
+    @JvmStatic fun eventProperty(property: String, value: Long) { for (o in observers) o.eventProperty(property, value) }
+    @JvmStatic fun eventProperty(property: String, value: Boolean) { for (o in observers) o.eventProperty(property, value) }
+    @JvmStatic fun eventProperty(property: String, value: Double) { for (o in observers) o.eventProperty(property, value) }
+    @JvmStatic fun eventProperty(property: String, value: String) { for (o in observers) o.eventProperty(property, value) }
+    @JvmStatic fun eventProperty(property: String) { for (o in observers) o.eventProperty(property) }
+    @JvmStatic fun event(eventId: Int) { for (o in observers) o.event(eventId) }
 
-    private fun snapshot(): List<EventObserver> = synchronized(observers) { observers.toList() }
-
-    private val log_observers = mutableListOf<LogObserver>()
-    @JvmStatic fun addLogObserver(o: LogObserver) { synchronized(log_observers) { log_observers.add(o) } }
-    @JvmStatic fun removeLogObserver(o: LogObserver) { synchronized(log_observers) { log_observers.remove(o) } }
+    private val log_observers = CopyOnWriteArrayList<LogObserver>()
+    @JvmStatic fun addLogObserver(o: LogObserver) { log_observers.addIfAbsent(o) }
+    @JvmStatic fun removeLogObserver(o: LogObserver) { log_observers.remove(o) }
     @JvmStatic fun logMessage(prefix: String, level: Int, text: String) {
-        val snap = synchronized(log_observers) { log_observers.toList() }
-        for (o in snap) o.logMessage(prefix, level, text)
+        for (o in log_observers) o.logMessage(prefix, level, text)
     }
 
     interface EventObserver {

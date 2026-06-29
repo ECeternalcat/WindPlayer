@@ -7,8 +7,13 @@
 
     <application
         android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="WindPlayer"
         android:supportsRtl="true"
+        android:supportsPictureInPicture="true"
+        android:enableOnBackInvokedCallback="true"
+        android:usesCleartextTraffic="true"
         android:theme="@style/Theme.WindPlayer">
 
         <activity

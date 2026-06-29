@@ -35,7 +35,7 @@ internal fun showContextMenu(
         addActionListener {
             player.command("cycle", "pause")
             val paused = try { player.getPropertyString("pause") == "yes" } catch (_: Exception) { false }
-            osdEvents.tryEmit(if (paused) "|| Paused" else "> Playing")
+            osdEvents.tryEmit(if (paused) "|| ${I18n.get("osd_paused")}" else "> ${I18n.get("osd_playing")}")
         }
     })
 
@@ -67,7 +67,7 @@ internal fun showContextMenu(
         addActionListener {
             player.command("cycle", "mute")
             val muted = try { player.getPropertyString("mute") == "yes" } catch (_: Exception) { false }
-            osdEvents.tryEmit(if (muted) "Muted" else "Vol: ${player.getPropertyLong("volume")}%")
+            osdEvents.tryEmit(if (muted) I18n.get("osd_muted") else "${I18n.get("osd_vol")}: ${player.getPropertyLong("volume")}%")
         }
     })
 
@@ -79,20 +79,20 @@ internal fun showContextMenu(
             addActionListener {
                 player.command("cycle", "sid")
                 val sid = player.getPropertyString("sid") ?: "no"
-                osdEvents.tryEmit(if (sid == "no") "Subtitle: Off" else "Subtitle: #$sid")
+                osdEvents.tryEmit(if (sid == "no") I18n.get("osd_subtitle_off") else String.format(I18n.get("osd_subtitle_num"), sid))
             }
         })
         addSeparator()
         add(JMenuItem(I18n.get("sub_delay_neg")).apply {
             addActionListener {
                 player.command("add", "sub-delay", "-0.1")
-                osdEvents.tryEmit("Sub delay: %+.1fs".format(player.getPropertyDouble("sub-delay")))
+                osdEvents.tryEmit("${I18n.get("osd_sub_delay")}: %+.1fs".format(player.getPropertyDouble("sub-delay")))
             }
         })
         add(JMenuItem(I18n.get("sub_delay_pos")).apply {
             addActionListener {
                 player.command("add", "sub-delay", "0.1")
-                osdEvents.tryEmit("Sub delay: %+.1fs".format(player.getPropertyDouble("sub-delay")))
+                osdEvents.tryEmit("${I18n.get("osd_sub_delay")}: %+.1fs".format(player.getPropertyDouble("sub-delay")))
             }
         })
         add(JMenuItem(I18n.get("reset_sub_delay")).apply {
@@ -109,20 +109,20 @@ internal fun showContextMenu(
             addActionListener {
                 player.command("cycle", "aid")
                 val aid = player.getPropertyString("aid") ?: "no"
-                osdEvents.tryEmit(if (aid == "no") "Audio: Off" else "Audio: #$aid")
+                osdEvents.tryEmit(if (aid == "no") I18n.get("osd_audio_off") else String.format(I18n.get("osd_audio_num"), aid))
             }
         })
         addSeparator()
         add(JMenuItem(I18n.get("audio_delay_neg")).apply {
             addActionListener {
                 player.command("add", "audio-delay", "-0.1")
-                osdEvents.tryEmit("Audio delay: %+.1fs".format(player.getPropertyDouble("audio-delay")))
+                osdEvents.tryEmit("${I18n.get("osd_audio_delay")}: %+.1fs".format(player.getPropertyDouble("audio-delay")))
             }
         })
         add(JMenuItem(I18n.get("audio_delay_pos")).apply {
             addActionListener {
                 player.command("add", "audio-delay", "0.1")
-                osdEvents.tryEmit("Audio delay: %+.1fs".format(player.getPropertyDouble("audio-delay")))
+                osdEvents.tryEmit("${I18n.get("osd_audio_delay")}: %+.1fs".format(player.getPropertyDouble("audio-delay")))
             }
         })
         add(JMenuItem(I18n.get("reset_audio_delay")).apply {
@@ -221,7 +221,7 @@ internal fun showContextMenu(
 
     popup.add(JMenuItem(I18n.get("screenshot")).apply {
         addActionListener {
-            player.command("screenshot")
+            player.command("screenshot", "subtitles")
             osdEvents.tryEmit(I18n.get("osd_screenshot_saved"))
         }
     })

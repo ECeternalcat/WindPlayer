@@ -44,68 +44,73 @@ class MpvRenderView(
     // still has the file loaded and will resume from the current position once
     // the surface is reattached. Calling loadfile again would restart from 0.
     private val firstInitDone = AtomicBoolean(false)
-
-    init {
-        holder.addCallback(object : SurfaceHolder.Callback {
-            override fun surfaceCreated(holder: SurfaceHolder) {
-                Log.i(TAG, "surfaceCreated")
-                surfaceValid.set(true)
-                scope.launch {
-                    try {
-                        // mpv calls are serialized by MpvPlayer.lock internally.
-                        // No outer synchronized(player) needed (would be harmful:
-                        // blocks all player callers; see A-2026-H7).
-                        if (!player.isCreated()) {
-                            player.createWithContext(context)
-                            val s = SettingsHelper.load(context)
-                            player.setOption("vo", "gpu")
-                            player.setOption("hwdec", if (s.hwdecAuto) "auto-safe" else "no")
-                            player.setOption("keep-open", "yes")
-                            player.setOption("idle", "yes")
-                            player.setOption("sub-font-size", s.subFontSize.toString())
-                            player.setOption("sub-border-size", s.subBorderSize.toString())
-                            player.setOption("volume", s.defaultVolume.toString())
-                            player.setOption("screenshot-directory", context.getExternalFilesDir(null)?.absolutePath ?: context.filesDir.absolutePath)
-                            Log.i(TAG, "Attaching surface...")
-                        }
-                        if (!surfaceValid.get()) {
-                            Log.i(TAG, "surface invalidated before attach, aborting")
-                            return@launch
-                        }
-                        player.attachSurface(holder.surface)
-                        player.initialize()
-                        if (!firstInitDone.getAndSet(true)) {
-                            Log.i(TAG, "mpv ready, handing off to screen for loadfile")
-                            // Screen takes it from here: opens pfd (if needed) and
-                            // issues loadfile. Centralized pfd ownership = no leaks.
-                            onSurfaceReady()
-                        } else {
-                            Log.i(TAG, "surface reattached (resuming playback)")
-                            // Force mpv to re-init the video chain so it binds to
-                            // the freshly-attached surface. Without this the vo
-                            // (torn down when the surface was destroyed in the
-                            // background) never recovers → audio-only black screen.
-                            // (Network also reloads via onSurfaceReattached below,
-                            // which re-inits video too; this covers local files.)
-                            try {
-                                player.setProperty("vid", "no")
-                                player.setProperty("vid", "1")
-                            } catch (_: Exception) {}
-                            // Notify the screen AFTER the surface is bound — it
-                            // uses this to reload network streams (whose proxy
-                            // session died in the background) so loadfile runs
-                            // against a live surface instead of racing this
-                            // attach (which left video black with audio only).
-                            onSurfaceReattached()
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Player init error", e)
+    // H10: keep a reference so release() can unregister the callback.
+    // Without this, the anonymous callback (which captures player/context/
+    // onSurfaceReady) leaks for the process lifetime if the holder outlives
+    // the view (e.g. window reuse).
+    private val surfaceCallback = object : SurfaceHolder.Callback {
+        override fun surfaceCreated(holder: SurfaceHolder) {
+            Log.i(TAG, "surfaceCreated")
+            surfaceValid.set(true)
+            scope.launch {
+                try {
+                    // mpv calls are serialized by MpvPlayer.lock internally.
+                    // No outer synchronized(player) needed (would be harmful:
+                    // blocks all player callers; see A-2026-H7).
+                    if (!player.isCreated()) {
+                        player.createWithContext(context)
+                        val s = SettingsHelper.load(context)
+                        player.setOption("vo", "gpu")
+                        player.setOption("hwdec", if (s.hwdecAuto) "auto-safe" else "no")
+                        player.setOption("keep-open", "yes")
+                        player.setOption("idle", "yes")
+                        player.setOption("sub-font-size", s.subFontSize.toString())
+                        player.setOption("sub-border-size", s.subBorderSize.toString())
+                        player.setOption("volume", s.defaultVolume.toString())
+                        player.setOption("screenshot-directory", context.getExternalFilesDir(null)?.absolutePath ?: context.filesDir.absolutePath)
+                        Log.i(TAG, "Attaching surface...")
                     }
+                    if (!surfaceValid.get()) {
+                        Log.i(TAG, "surface invalidated before attach, aborting")
+                        return@launch
+                    }
+                    player.attachSurface(holder.surface)
+                    player.initialize()
+                    if (!firstInitDone.getAndSet(true)) {
+                        Log.i(TAG, "mpv ready, handing off to screen for loadfile")
+                        // Screen takes it from here: opens pfd (if needed) and
+                        // issues loadfile. Centralized pfd ownership = no leaks.
+                        onSurfaceReady()
+                    } else {
+                        Log.i(TAG, "surface reattached (resuming playback)")
+                        // Force mpv to re-init the video chain so it binds to
+                        // the freshly-attached surface. Without this the vo
+                        // (torn down when the surface was destroyed in the
+                        // background) never recovers → audio-only black screen.
+                        // (Network also reloads via onSurfaceReattached below,
+                        // which re-inits video too; this covers local files.)
+                        try {
+                            player.setProperty("vid", "no")
+                            player.setProperty("vid", "1")
+                        } catch (_: Exception) {}
+                        // Notify the screen AFTER the surface is bound — it
+                        // uses this to reload network streams (whose proxy
+                        // session died in the background) so loadfile runs
+                        // against a live surface instead of racing this
+                        // attach (which left video black with audio only).
+                        onSurfaceReattached()
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Player init error", e)
                 }
             }
-            override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) {
-                Log.i(TAG, "surfaceChanged: ${w}x${h}")
-                if (player.isCreated()) {
+        }
+        override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) {
+            Log.i(TAG, "surfaceChanged: ${w}x${h}")
+            // H23: dispatch vid toggle to IO scope — the two setProperty calls
+            // each acquire the mpv lock and can block on a busy decoder.
+            if (player.isCreated()) {
+                scope.launch {
                     try {
                         // Toggle vid to force mpv to re-read ANativeWindow size
                         // after rotation (kept from the legacy workaround).
@@ -114,19 +119,25 @@ class MpvRenderView(
                     } catch (_: Exception) {}
                 }
             }
-            override fun surfaceDestroyed(holder: SurfaceHolder) {
-                surfaceValid.set(false)
-                try { player.detachSurface() } catch (_: Exception) {}
-            }
-        })
+        }
+        override fun surfaceDestroyed(holder: SurfaceHolder) {
+            surfaceValid.set(false)
+            try { player.detachSurface() } catch (_: Exception) {}
+        }
+    }
+
+    init {
+        holder.addCallback(surfaceCallback)
     }
 
     /**
-     * Cancel any in-flight surface-created coroutine and mark the surface
-     * invalid. Called from `AndroidView.onRelease` when the player screen
-     * leaves composition. Does NOT touch pfd — that's the screen's job.
+     * Cancel any in-flight surface-created coroutine, mark the surface
+     * invalid, and unregister the SurfaceHolder callback. Called from
+     * `AndroidView.onRelease` when the player screen leaves composition.
+     * Does NOT touch pfd — that's the screen's job.
      */
     fun release() {
+        holder.removeCallback(surfaceCallback)
         scope.cancel()
         surfaceValid.set(false)
     }

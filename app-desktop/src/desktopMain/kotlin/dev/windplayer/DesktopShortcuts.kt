@@ -169,14 +169,14 @@ internal fun bindDesktopShortcuts(rootPane: JRootPane, ctx: DesktopShortcutConte
         if (isPlayer()) {
             player.command("cycle", "sid")
             val sid = player.getPropertyString("sid") ?: "no"
-            osd.tryEmit(if (sid == "no") "Subtitle: Off" else "Subtitle: #$sid")
+            osd.tryEmit(if (sid == "no") I18n.get("osd_subtitle_off") else String.format(I18n.get("osd_subtitle_num"), sid))
         }
     }
     bind(KeyStroke.getKeyStroke(KeyEvent.VK_B, 0), "cycleAudio") {
         if (isPlayer()) {
             player.command("cycle", "aid")
             val aid = player.getPropertyString("aid") ?: "no"
-            osd.tryEmit(if (aid == "no") "Audio: Off" else "Audio: #$aid")
+            osd.tryEmit(if (aid == "no") I18n.get("osd_audio_off") else String.format(I18n.get("osd_audio_num"), aid))
         }
     }
     bind(KeyStroke.getKeyStroke(KeyEvent.VK_Z, 0), "subDelayDown") {
@@ -265,7 +265,10 @@ internal fun bindDesktopShortcuts(rootPane: JRootPane, ctx: DesktopShortcutConte
     // ---------- Screenshot / Playlist / Cheatsheet ----------
     bind(KeyStroke.getKeyStroke(KeyEvent.VK_S, 0), "screenshot") {
         if (isPlayer()) {
-            player.command("screenshot")
+            // mpv requires <flags> (subtitles/video/window/each-frame); bare
+            // "screenshot" is rejected by newer builds. "subtitles" includes
+            // the rendered subs in the capture (matches mobile behaviour).
+            player.command("screenshot", "subtitles")
             osd.tryEmit(I18n.get("osd_screenshot_saved"))
         }
     }
@@ -296,15 +299,20 @@ internal fun adjustSpeed(player: MpvPlayer, osd: MutableSharedFlow<String>, delt
 }
 
 internal fun adjustDelay(player: MpvPlayer, osd: MutableSharedFlow<String>, property: String, delta: Double) {
+    // L9: read the current value BEFORE issuing `add`, then compute the new
+    // value locally. mpv processes `add` asynchronously; immediately re-reading
+    // the property often returns the pre-add value, making the OSD one step off.
+    val current = player.getPropertyDouble(property)
     player.command("add", property, delta.toString())
-    val value = player.getPropertyDouble(property)
-    val label = if (property == "sub-delay") "Sub delay" else "Audio delay"
-    osd.tryEmit("$label: %+.1fs".format(value))
+    val newValue = current + delta
+    val label = if (property == "sub-delay") I18n.get("osd_sub_delay") else I18n.get("osd_audio_delay")
+    osd.tryEmit("$label: %+.1fs".format(newValue))
 }
 
 internal fun adjustEq(player: MpvPlayer, osd: MutableSharedFlow<String>, property: String, delta: Int) {
+    val current = player.getPropertyLong(property)
     player.command("add", property, delta.toString())
-    val value = player.getPropertyLong(property)
+    val newValue = current + delta
     val label = property.replaceFirstChar { it.uppercase() }
-    osd.tryEmit("$label: $value")
+    osd.tryEmit("$label: $newValue")
 }

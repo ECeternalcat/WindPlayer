@@ -20,7 +20,9 @@ kotlin {
             dependencies {
                 implementation(project(":core-mpv"))
                 implementation(project(":core-vfs"))
-                implementation(compose.desktop.currentOs)
+                // compose.desktop.currentOs lives ONLY in app-desktop — putting
+                // it in a library pins Skia/LWJGL natives to the build-host OS,
+                // making the library non-portable across CI runners.
                 implementation(compose.runtime)
                 implementation(compose.foundation)
                 implementation(compose.material3)

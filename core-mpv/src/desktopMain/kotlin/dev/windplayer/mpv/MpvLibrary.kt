@@ -13,10 +13,34 @@ class MpvEventStructure : Structure() {
 interface MpvLibrary : Library {
     companion object {
         val INSTANCE: MpvLibrary by lazy {
-            val dllDir = System.getProperty("mpv.lib.path")
-                ?: "./lib/mpv-dev"
-            System.setProperty("jna.library.path", dllDir)
-            Native.load("libmpv-2", MpvLibrary::class.java)
+            val osName = System.getProperty("os.name").lowercase()
+            val dllName = when {
+                osName.contains("win") -> "libmpv-2.dll"
+                osName.contains("mac") || osName.contains("darwin") -> "libmpv.dylib"
+                else -> "libmpv.so"
+            }
+
+            // Search for the DLL in candidate locations — the working directory
+            // varies (project root for `gradlew run`, app-desktop/ for IDE runs,
+            // build/ for distributions). Try them all.
+            val candidates = listOfNotNull(
+                System.getProperty("mpv.lib.path"),  // from jvmArgs
+                "./lib/mpv-dev",                      // cwd = project root
+                "../lib/mpv-dev",                     // cwd = app-desktop
+                "../../lib/mpv-dev"                   // cwd = app-desktop/build/..
+            )
+
+            val dllFile = candidates
+                .map { java.io.File(it, dllName) }
+                .firstOrNull { it.exists() }
+
+            if (dllFile != null) {
+                Native.load(dllFile.absolutePath, MpvLibrary::class.java)
+            } else {
+                // Last resort: let JNA search by name
+                candidates.forEach { System.setProperty("jna.library.path", it) }
+                Native.load("libmpv-2", MpvLibrary::class.java)
+            }
         }
     }
 
@@ -37,6 +61,7 @@ interface MpvLibrary : Library {
     fun mpv_get_property(ctx: Pointer, name: String, format: Int, data: Any): Int
 
     fun mpv_observe_property(ctx: Pointer, reply: Long, name: String, format: Int): Int
+    fun mpv_unobserve_property(ctx: Pointer, id: Long): Int
 
     fun mpv_request_log_messages(ctx: Pointer, min_level: String): Int
     fun mpv_wait_event(ctx: Pointer, timeout: Double): MpvEventStructure?

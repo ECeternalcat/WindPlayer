@@ -64,7 +64,9 @@ actual class MpvPlayer actual constructor() {
                         }
                         MPV_EVENT_IDLE -> _events.tryEmit(MpvEvent.Idle())
                         MPV_EVENT_END_FILE -> {
-                            val reason = event.data?.getInt(0) ?: 0
+                            // L13: default to 4 (ERROR) rather than 0 (EOF) so a
+                            // null data pointer is distinguishable from natural end.
+                            val reason = event.data?.getInt(0) ?: 4
                             LOG.fine("end file, reason=$reason")
                             _events.tryEmit(MpvEvent.EndFile(reason))
                         }
@@ -111,6 +113,12 @@ actual class MpvPlayer actual constructor() {
         // thread will fall out of its loop promptly. Join BEFORE destroying
         // the context — calling any mpv API after terminate_destroy is UB.
         eventThread?.join(2000)
+        // L1: check whether the event thread actually terminated. If it didn't
+        // (e.g. stuck inside mpv_wait_event), proceeding to terminate_destroy
+        // is a use-after-free risk — log loudly so it's diagnosable.
+        if (eventThread?.isAlive == true) {
+            LOG.warning("event thread did not terminate within 2s; destroy may race")
+        }
         synchronized(lock) {
             eventThread = null
             if (handle != 0L) {
@@ -123,10 +131,16 @@ actual class MpvPlayer actual constructor() {
     actual fun command(vararg args: String) {
         synchronized(lock) {
             if (handle == 0L) return
-            val cmdStr = args.joinToString(" ")
-            val code = lib.mpv_command_string(ptr(), cmdStr)
+            // Use the array form (mpv_command) with a NULL terminator rather
+            // than mpv_command_string. The string form splits on spaces, so
+            // any path containing a space (very common: "C:/My Videos/x.mkv")
+            // would be mis-parsed as multiple arguments and fail to load.
+            val cmdArr = arrayOfNulls<String>(args.size + 1)
+            System.arraycopy(args, 0, cmdArr, 0, args.size)
+            // cmdArr[args.size] stays null — mpv requires the NULL sentinel.
+            val code = lib.mpv_command(ptr(), cmdArr)
             if (code < 0) {
-                LOG.warning("command($cmdStr) failed, error=$code")
+                LOG.warning("command(${args.joinToString(" ")}) failed, error=$code")
             }
         }
     }
@@ -195,6 +209,16 @@ actual class MpvPlayer actual constructor() {
         synchronized(lock) {
             if (handle == 0L) return
             lib.mpv_observe_property(ptr(), 0, name, format.ordinal)
+        }
+    }
+
+    actual fun clearPropertyObservers() {
+        synchronized(lock) {
+            if (handle == 0L) return
+            // reply_userdata=0 is used by all observeProperty() calls above;
+            // mpv_unobserve_property(handle, 0) removes every observer in that
+            // group. Prevents observer accumulation across PlayerScreen re-entries.
+            lib.mpv_unobserve_property(ptr(), 0)
         }
     }
 

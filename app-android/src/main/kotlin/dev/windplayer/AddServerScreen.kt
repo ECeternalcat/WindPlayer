@@ -47,6 +47,11 @@ fun AddServerScreen(
 
     var testing by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<String?>(null) }
+    // H20: track success as a Boolean rather than parsing the localized
+    // testResult string. Previously the check was result.startsWith("Connected"),
+    // which broke in any non-English locale (a successful connection was
+    // rendered as a failure with orange border).
+    var testSuccess by remember { mutableStateOf<Boolean?>(null) }
 
     BackHandler { onBack() }
 
@@ -189,8 +194,10 @@ fun AddServerScreen(
                                 MobileVfsManager.listDirectory(config, config.basePath)
                             }
                             testResult = String.format(I18n.get("connected_items"), files.size)
+                            testSuccess = true
                         } catch (e: Exception) {
                             testResult = String.format(I18n.get("failed_msg"), e.message ?: I18n.get("connection_error"))
+                            testSuccess = false
                         }
                         testing = false
                     }
@@ -222,7 +229,7 @@ fun AddServerScreen(
             // Test result
             testResult?.let { result ->
                 Spacer(Modifier.height(8.dp))
-                val isSuccess = result.startsWith("Connected")
+                val isSuccess = testSuccess == true
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     color = WindColors.White,

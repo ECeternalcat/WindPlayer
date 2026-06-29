@@ -40,6 +40,24 @@ class WebdavClient : VfsClient {
                 // not expected to redirect in normal operation.
                 followRedirects = false
             }
+            // M4: probe the server with PROPFIND Depth:0 to verify host
+            // reachability + credentials. Without this, connect() always
+            // returns true and auth/host errors only surface as an empty
+            // listing indistinguishable from a genuinely empty directory.
+            val probeResponse = httpClient!!.request("$baseUrl${normalizePath(config.basePath)}") {
+                method = HttpMethod.parse("PROPFIND")
+                header("Depth", "0")
+                header("Authorization", buildBasicAuth(config.username, config.password))
+                contentType(ContentType.Application.Xml)
+                setBody("<?xml version=\"1.0\" encoding=\"utf-8\"?>" +
+                    "<d:propfind xmlns:d=\"DAV:\"><d:prop><d:displayname/></d:prop></d:propfind>")
+            }
+            LOG.info("connect probe: ${probeResponse.status}")
+            if (probeResponse.status.value == 401) {
+                LOG.warning("WebDAV authentication failed (401)")
+                disconnect()
+                return@withContext false
+            }
             LOG.info("configured for $baseUrl")
             true
         } catch (e: Exception) {

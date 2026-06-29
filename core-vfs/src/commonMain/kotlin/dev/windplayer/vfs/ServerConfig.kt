@@ -20,11 +20,12 @@ data class ServerConfig(
     val useTls: Boolean = false
 ) {
     /**
-     * The bare hostname with any `http://` / `https://` scheme prefix stripped.
-     * Users may include the scheme to indicate TLS for WebDAV on non-default ports.
+     * The bare hostname with any `http://` / `https://` scheme prefix and
+     * trailing `:port` stripped. Users may include the scheme to indicate
+     * TLS for WebDAV; some paste `host:port` into the host field by mistake.
      */
     val bareHost: String
-        get() = host.removePrefix("https://").removePrefix("http://").trimEnd('/')
+        get() = host.removePrefix("https://").removePrefix("http://").substringBefore(':').trimEnd('/')
 
     /**
      * URL scheme for HTTP-based protocols (WebDAV). Detected from the host prefix;

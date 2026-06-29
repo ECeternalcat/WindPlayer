@@ -32,13 +32,14 @@ internal object CryptoUtil {
     fun encrypt(plaintext: String): String {
         if (plaintext.isEmpty()) return ""
         if (!isWindows) return PREFIX_PLAIN + plaintext
-        return try {
-            val cipher = Crypt32Util.cryptProtectData(plaintext.toByteArray(Charsets.UTF_8))
-            PREFIX_DPAPI + Base64.getEncoder().encodeToString(cipher)
-        } catch (e: Throwable) {
-            LOG.warning("DPAPI encrypt failed, falling back to plaintext: ${e.message}")
-            PREFIX_PLAIN + plaintext
-        }
+        // H12: fail-closed. Previously a DPAPI failure fell back to PREFIX_PLAIN,
+        // silently storing the password unencrypted in servers.properties — a
+        // security downgrade with no user signal. Now the exception propagates
+        // to saveConfig(), which catches it and logs "saveConfig failed" — the
+        // password stays in-memory only and never reaches disk. The user can
+        // retry; the in-memory server list still works until the app closes.
+        val cipher = Crypt32Util.cryptProtectData(plaintext.toByteArray(Charsets.UTF_8))
+        return PREFIX_DPAPI + Base64.getEncoder().encodeToString(cipher)
     }
 
     /**

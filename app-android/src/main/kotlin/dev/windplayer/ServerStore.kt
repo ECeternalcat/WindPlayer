@@ -47,7 +47,15 @@ object ServerStore {
                     appContext, PREFS, masterKey,
                     EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
                     EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-                ).also { encryptionActive = true }
+                ).also {
+                    encryptionActive = true
+                    // H13: if a previous launch couldn't use encryption and fell
+                    // back to PREFS_PLAIN, those servers exist ONLY in the
+                    // plaintext file. Without migration, once crypto recovers
+                    // we'd read the empty PREFS and the user would permanently
+                    // lose every saved server + password. Migrate + wipe now.
+                    migratePlaintextIfNeeded(appContext, it)
+                }
             } catch (e: Exception) {
                 // Log loudly — passwords will be stored in plaintext from now on.
                 Log.e(TAG, "EncryptedSharedPreferences unavailable, falling back to plaintext: ${e.message}")
@@ -56,6 +64,34 @@ object ServerStore {
             }
             cachedPrefs = built
             return built
+        }
+    }
+
+    /**
+     * Copy any servers from the plaintext fallback store into the encrypted
+     * store, then clear the plaintext file. Called once when encryption
+     * becomes available after a prior failure.
+     */
+    private fun migratePlaintextIfNeeded(context: Context, encryptedPrefs: SharedPreferences) {
+        try {
+            val plainPrefs = context.getSharedPreferences(PREFS_PLAIN, Context.MODE_PRIVATE)
+            val plainCount = plainPrefs.getInt("count", 0)
+            if (plainCount == 0) return
+            Log.i(TAG, "Migrating $plainCount server(s) from plaintext to encrypted store")
+            val e = encryptedPrefs.edit()
+            e.putInt("count", plainCount)
+            for (i in 0 until plainCount) {
+                for (f in listOf("id", "name", "proto", "host", "port", "user", "pass", "path")) {
+                    e.putString("s${i}_$f", plainPrefs.getString("s${i}_$f", ""))
+                }
+                e.putBoolean("s${i}_tls", plainPrefs.getBoolean("s${i}_tls", false))
+            }
+            e.apply()
+            // Wipe the plaintext file now that migration succeeded.
+            plainPrefs.edit().clear().apply()
+            Log.i(TAG, "Plaintext migration complete, wiped PREFS_PLAIN")
+        } catch (e: Exception) {
+            Log.e(TAG, "Plaintext migration failed (encrypted store may be incomplete): ${e.message}")
         }
     }
 
@@ -101,10 +137,16 @@ object ServerStore {
     }
 
     fun add(context: Context, server: ServerConfig): List<ServerConfig> {
-        val list = load(context); val updated = list + server; save(context, updated); return updated
+        // M28: synchronize load→modify→save so concurrent adds (e.g. background
+        // sync + user action) don't race and lose data.
+        synchronized(cacheLock) {
+            val list = load(context); val updated = list + server; save(context, updated); return updated
+        }
     }
 
     fun remove(context: Context, id: String): List<ServerConfig> {
-        val list = load(context); val updated = list.filterNot { it.id == id }; save(context, updated); return updated
+        synchronized(cacheLock) {
+            val list = load(context); val updated = list.filterNot { it.id == id }; save(context, updated); return updated
+        }
     }
 }

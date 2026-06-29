@@ -36,13 +36,16 @@ object DesktopSystemTheme {
 
     /** Windows: `AppsUseLightTheme` = 0 means dark. */
     private fun windows(): Boolean {
-        val p = Runtime.getRuntime().exec(
-            arrayOf("reg", "query",
-                "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-                "/v", "AppsUseLightTheme")
-        )
-        val out = BufferedReader(InputStreamReader(p.inputStream)).readText()
+        // M17: redirectErrorStream(true) so stderr doesn't fill the OS pipe
+        // buffer and block waitFor() indefinitely. Also destroy() the process
+        // to release native handles.
+        val p = ProcessBuilder("reg", "query",
+            "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+            "/v", "AppsUseLightTheme"
+        ).redirectErrorStream(true).start()
+        val out = p.inputStream.bufferedReader().readText()
         p.waitFor()
+        p.destroy()
         // "0x1" or "0x0" follows the value name.
         return out.substringAfter("AppsUseLightTheme", "")
             .substringAfter("REG_DWORD", "")
@@ -51,9 +54,11 @@ object DesktopSystemTheme {
 
     /** macOS: `AppleInterfaceStyle` = "Dark" when dark mode is on. */
     private fun macos(): Boolean {
-        val p = Runtime.getRuntime().exec(arrayOf("defaults", "read", "-g", "AppleInterfaceStyle"))
-        val out = BufferedReader(InputStreamReader(p.inputStream)).readText().trim()
+        val p = ProcessBuilder("defaults", "read", "-g", "AppleInterfaceStyle")
+            .redirectErrorStream(true).start()
+        val out = p.inputStream.bufferedReader().readText().trim()
         p.waitFor()
+        p.destroy()
         return out.equals("Dark", ignoreCase = true)
     }
 

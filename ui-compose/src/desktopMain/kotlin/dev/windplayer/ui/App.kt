@@ -84,6 +84,12 @@ fun App(
                 switchScreen(AppScreen.PLAYER)
             }
             callbacks.onFilePlayed(fileName, filePath, isLocal, serverId)
+        } else {
+            // H25: surface preparePlayback failures so the user gets feedback
+            // instead of the screen silently staying on BROWSER with no
+            // indication of what went wrong.
+            val msg = result.exceptionOrNull()?.message ?: "Failed to open file"
+            callbacks.onOsdEmit(msg)
         }
     }
 
@@ -117,8 +123,12 @@ fun App(
         }
     }
 
-    SideEffect {
-        callbacks.onSkipNextRegistered(skipNextAction)
+    // H28: register the skip-next callback ONCE, not on every recomposition.
+    // rememberUpdatedState keeps the lambda pointing at the latest skipNextAction
+    // without changing identity, so LaunchedEffect(Unit) runs only a single time.
+    val skipNextActionRef = rememberUpdatedState(skipNextAction)
+    LaunchedEffect(Unit) {
+        callbacks.onSkipNextRegistered { skipNextActionRef.value() }
     }
 
     LaunchedEffect(flows.dropFilePath) {
@@ -135,10 +145,34 @@ fun App(
             ThemeMode.SYSTEM -> DesktopSystemTheme.isSystemDark()
         }
     }
-    SideEffect { WindColors.applyDark(isDark) }
+    // M12: LaunchedEffect(isDark) fires only when isDark actually changes, not
+    // on every recomposition (~5x/sec during playback due to position polling).
+    // applyDark does ~15 mutableStateOf writes each call.
+    LaunchedEffect(isDark) { WindColors.applyDark(isDark) }
+
+    // Accent color: WindPlayer (orange) or Follow System (Windows accent via JNA registry)
+    val accent = state.settings.accentColor
+    val cs = when (accent) {
+        AccentColor.WINDPLAYER -> windColorScheme(isDark)
+        AccentColor.AUTO -> windColorSchemeAuto(isDark)
+    }
+    LaunchedEffect(accent, isDark) {
+        if (accent == AccentColor.AUTO) {
+            val argb = try { readWindowsAccentColor() } catch (_: Exception) { null }
+            val primary = if (argb != null) {
+                // Registry returns 0xAARRGGBB; convert to Compose Color
+                androidx.compose.ui.graphics.Color(argb)
+            } else {
+                cs.primary // M3 purple fallback
+            }
+            WindColors.applyAccent(primary)
+        } else {
+            WindColors.applyAccent(null)
+        }
+    }
 
     MaterialTheme(
-        colorScheme = windColorScheme(isDark),
+        colorScheme = cs,
         typography = WindTypography,
         shapes = WindShapes
     ) {
@@ -214,6 +248,7 @@ fun App(
                     vfsManager = vfsManager,
                     isFullscreen = state.isFullscreen,
                     autoPlayNext = state.settings.autoPlayNext,
+                    initialHwdec = state.settings.hwdecAuto,
                     modifier = modifier
                 )
             }

@@ -5066,3 +5066,187 @@ scope.launch(Dispatchers.IO) {
 修改：
   app-android/.../MobilePlayerScreen.kt   # 抽出 captureThumbnailForPath；5 条切集路径切前补截图；captureThumbAndExit 复用 helper
 ```
+
+
+---
+
+## 阶段五十九：第三轮全面代码审计 — 98 项发现 / 83 项修复 / 15 项接受 (已完成)
+
+来源：第三轮深度代码审查（2026-06-28），覆盖 56 个 Kotlin 源文件、7 个 Gradle 脚本、2 个 GitHub Actions workflow。详见 `Documents/Audit-2026-06-28.md`。
+
+### 审计范围
+
+| 类别 | 发现数 | 修复 `[x]` | 接受 `[!]` | 未处理 `[ ]` |
+|------|--------|-----------|-----------|-------------|
+| Critical | 8 + 2 CI | 8 | 1 (libplayer.so) | 0 |
+| High | 30 + 6 CI | 33 | 3 | 0 |
+| Medium | 29 + 5 CI | 29 | 5 | 0 |
+| Low | 15 + 3 CI | 13 | 5 | 0 |
+| **合计** | **98** | **83 (85%)** | **15 (15%)** | **0** |
+
+### 修复分波次
+
+#### 第一波：一行级高 ROI（10 项）
+- C2 `dropEvents` replay=1（命令行文件不再丢失）
+- C4 `themeMode` 持久化（桌面+安卓）
+- C5 SAF 加 WRITE 权限 flag
+- C7 `audio-add` 移到 FileLoaded 处理器（外挂音轨不再丢失）
+- C8 启动时应用 `defaultVolume`
+- H1 `command()` 用数组 API（路径含空格不再断裂）
+- H26 `applyMpvSettings` 去掉 volume 重置
+- H30 桌面 screenshot 加 `"subtitles"` flag
+- L4 `CopyOnWriteArrayList` 替代 `toList()` 每事件分配
+- M11 `win32SetWindowStyle` wrapper（SetLastError 检测）
+
+#### 第二波：资源/锁/线程（11 项）
+- C1 安卓 cleartext 配置 + PiP + onBackInvokedCallback
+- C6 SAF/DocumentFile 4 处操作迁到 `withContext(IO)`
+- H2 StreamSession `closed` 标志防 SSH 连接泄漏
+- H3 `inferEndFileReason` 改读 observer 缓存值（消除 JNI 再入死锁风险）
+- H4 StreamProxy executor shutdown + daemon 线程工厂
+- H5 `VfsManager.shutdown()` `runBlocking` join + `ioScope.cancel()`
+- H6 `saveConfig` 加 `configLock` 同步
+- H7 `DisposableEffect.onDispose` 改用独立 scope（不被 Compose 取消）
+- H8 新增 `clearPropertyObservers()` + `DisposableEffect` 反注册
+- H9 `initAndroid` 加 `observerAdded` 守卫
+- H10 SurfaceHolder callback 提取为字段 + `removeCallback`
+
+#### 第三波：安全 fail-closed（4 项）
+- C3 FTP `useTls=true` 时播放 URL 改 `ftps://` scheme
+- H11 FTPS PROT P 失败 `disconnect + return false`
+- H12 DPAPI 失败异常直接传播（不再降级到 `plain:`）
+- H13 ServerStore 新增 `migratePlaintextIfNeeded`（crypto 恢复时自动迁移）
+
+#### 第四波：UX/ANR/正确性（12 项）
+- H14 新增 `isScrubbing` 状态（slider 拖拽不被轮询覆盖）
+- H15 `captureThumbAndExit` 截图改 IO 协程
+- H16 `HistoryStore.*` 全部 dispatch 到 IO
+- H17 BackHandler 改 `isNotEmpty()`
+- H18 `savedInstanceState == null` 才处理 intent
+- H19 新增 `onExternalVideoConsumed` 回调
+- H20 `testSuccess: Boolean?` 替代字符串匹配
+- H21 `CancellationException` 先 re-throw
+- H23 `surfaceChanged` vid 切换 dispatch 到 IO
+- H24 `initialHwdec` 参数从 settings seed
+- H25 `prepareAndPlay` 加 else 分支发 OSD 错误
+- H28 `rememberUpdatedState` + `LaunchedEffect(Unit)` 只注册 skipNext 一次
+
+#### 第五波：剩余 High（3 项）
+- H22 首次亮度手势 Toast + 打开 WRITE_SETTINGS 授权页
+- H27 500ms Swing Timer 同步 `composePanel.background`
+- H29 桌面端 15 处 OSD 硬编码英文全部 `I18n.get`（+5 个 i18n 键）
+
+#### Medium/Low 批（28 项修复 + 10 项接受）
+代码修复包括：TrackMatcher 数值比较、Range 后缀解析、Android catch 日志、WebDAV 连接探测、持久化 IO 异步化、手势节流、PiP 拖动边界、savedStyle/savedBounds 分离、ServerStore 原子化、最大窗口持久化、applyLayout 重读尺寸、applyDark LaunchedEffect、语言冷启动闪烁消除、缩略图 SHA-256、端口范围校验、重命名字符校验等。
+
+#### CI/CD 批（12 项）
+- 版本号穿透：tag → versionCode/versionName/packageVersion
+- `|| true` 移除
+- distZip 对齐 AGENTS.md
+- `compose.desktop.currentOs` 从 ui-compose 移至 app-desktop
+- `slf4j-nop` 从 jvmShared 移至 desktopMain
+- CI 跑 `:core-vfs:allTests`
+- themes.xml 改 `DeviceDefault.NoActionBar`
+- 删除 `androidSourceSetLayoutVersion=2` no-op
+- AGP 9 flags 加注释
+- AGENTS.md JDK 说法修正
+
+### 编译验证
+- ✅ `:app-desktop:compileKotlinDesktop` — BUILD SUCCESSFUL
+- ✅ `:app-android:compileDebugKotlin` — BUILD SUCCESSFUL
+- ✅ `:core-vfs:allTests` — 66 tests, 0 failures
+
+
+---
+
+## 阶段六十：设置中心增强 — 分类导航 + 21 个新字段 (已完成)
+
+将设置页从 7 字段 / 4 分区的简单平铺列表升级为**9 分类导航式设置中心**，对标 mpv-android / PotPlayer / VLC。详见 `Documents/Settings-Enhancement-Plan.md`。
+
+### 1. 数据模型扩展（7 → 28 字段）
+
+`PlayerSettings` 新增 21 个字段，覆盖播放 / 视频 / 音频 / 字幕 / 网络 / 截图 6 大类别：
+
+| 类别 | 新增字段 | mpv 属性映射 |
+|------|----------|-------------|
+| 播放 | `defaultSpeed` / `resumePlayback` / `seekStepShort` / `seekStepLong` | `speed` / — / — / — |
+| 视频 | `gpuApi` / `deinterlace` / `videoAspect` | `gpu-api` / `deinterlace` / `video-aspect-override` |
+| 音频 | `audioChannels` / `pitchCorrection` | `audio-channels` / `audio-pitch-correction` |
+| 字幕 | `subColor` / `subBackColor` / `subFontFamily` / `subAlignY` | `sub-color` / `sub-back-color` / `sub-font` / `sub-align-y` |
+| 网络 | `cacheSize` / `userAgent` | `demuxer-max-bytes` / `user-agent` |
+| 截图 | `screenshotFormat` / `screenshotJpegQuality` / `screenshotSubtitles` | `screenshot-format` / `screenshot-jpeg-quality` / screenshot flags |
+
+### 2. mpv 属性应用
+
+新增 `applyMpvStartupOptions(player, settings)` 函数，统一管理**启动时**必须通过 `setOption` 设置的选项（volume / hwdec / gpu-api / speed / cache / screenshot / user-agent）。`Main.kt` 的 `windowOpened` 改为调用此函数。
+
+`applyMpvSettings`（运行时）扩展：字幕颜色/背景/字体/对齐 + 去隔行/声道/音调 + 截图格式/质量。
+
+### 3. 持久化层扩展
+
+- **桌面** `DesktopPersistence.kt`：`loadSettings` / `saveSettings` 全部 28 字段读写，向后兼容（缺失字段用默认值）。
+- **安卓** `SettingsHelper.kt`：`load` / `save` 同步扩展 21 个新字段。
+
+### 4. i18n 扩展
+
+新增 **~50 个 i18n 键**（中英双语），覆盖：
+- 9 个分类名（`cat_playback` ~ `cat_advanced`）
+- 所有新设置项标签（`default_speed` / `resume_playback` / `sub_color` / `cache_size` 等）
+- 枚举值标签（`align_bottom` / `align_center` / `align_top` 等）
+- 单位（`seconds_unit` / `mib_unit` / `auto_value`）
+
+### 5. 桌面端 UI — 分类导航
+
+**左侧分类导航栏**（220dp 固定宽度）：
+- 9 个分类项，每项 Phosphor 图标 + 分类名
+- 选中项 Signal Orange 图标 + CanvasCream 高亮背景
+- 图标：`play` / `video` / `speaker-high` / `subtitles` / `monitor` / `gauge` / `corners-out` / `file` / `gear`
+
+**右侧内容面板**：
+- `AnimatedContent` 淡入淡出切换分类
+- 每个分类独立 `@Composable` 函数渲染该分类的设置项
+
+**新组件**：
+- `SettingDropdownRow` — 带标签的下拉选择器（key-value Pair 列表 + Pill 形状触发器）
+- `SettingColorRow` — 预设色板（白/黄/青/橙/黑/透明）+ Hex 显示
+- `SettingTextFieldRow` — 文本输入（User-Agent 等自由文本字段）
+- 复用现有的 `SettingSliderRow` / `SettingToggleRow` / `ThemeSelectorRow`
+
+### 6. 安卓端 UI — 列表入口 → 子页面
+
+- 首页列出 9 个分类卡片（Phosphor 图标 + 标题 + 右箭头），点击进入对应分类
+- `AnimatedContent` 滑入滑出过渡
+- `BackHandler` 智能返回：子页面 → 列表 → 退出设置
+- `SettingsPage` 枚举绑定 Phosphor glyph（Char 码点）
+
+### 编译验证
+- ✅ `:app-desktop:compileKotlinDesktop` — BUILD SUCCESSFUL
+- ✅ `:app-android:compileDebugKotlin` — BUILD SUCCESSFUL
+- ✅ `:core-vfs:allTests` — 66 tests, 0 failures
+
+### 文件变更
+```
+新增：
+  Documents/Settings-Enhancement-Plan.md                     # 设置增强完整计划
+
+修改：
+  ui-compose/src/commonMain/.../PlayerSettings.kt            # 7 → 28 字段
+  ui-compose/src/commonMain/.../I18n.kt                      # +~50 键（中英）
+  ui-compose/src/desktopMain/.../SettingsScreen.kt           # 完全重写：分类导航 + 9 子页面 + 4 新组件
+  app-desktop/.../DesktopPersistence.kt                      # loadSettings/saveSettings 扩展 + applyMpvStartupOptions 新增
+  app-desktop/.../Main.kt                                    # windowOpened 改用 applyMpvStartupOptions
+  app-android/.../SettingsHelper.kt                          # load/save 扩展 21 字段
+  app-android/.../MobileSettingsScreen.kt                    # 完全重写：分类导航 + 9 子页面 + 4 新组件
+```
+
+---
+
+## 第六十阶段状态总结
+
+**已完成**：设置中心分类导航（桌面左栏 + 安卓列表入口）、PlayerSettings 扩展到 28 字段、mpv 属性全映射（启动 + 运行时）、持久化层双端扩展、~50 个 i18n 键、新 UI 组件（下拉/色板/文本输入）
+
+**下一步**：
+- Seek 步长设置项接入 DesktopShortcuts（当前定义了但未消费）
+- 截图内容标志接入 screenshot 命令（桌面端）
+- 阶段二：视频/音频/网络分类的 mpv 属性在安卓 MpvRenderView 的启动选项集成
+- 高级分类：mpv 配置目录编辑 / 日志级别 / 自定义快捷键

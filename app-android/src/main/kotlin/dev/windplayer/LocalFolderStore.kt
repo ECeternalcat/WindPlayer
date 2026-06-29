@@ -45,6 +45,11 @@ object LocalFolderStore {
 
     private fun save(context: Context, folders: List<LocalFolder>) {
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        // M15: capture oldCount BEFORE staging the new count. Previously this
+        // read p.getInt("count",0) AFTER e.putInt("count",…), relying on the
+        // fact that apply() doesn't update the in-memory cache mid-edit —
+        // fragile and inconsistent with ServerStore's safer pattern.
+        val oldCount = p.getInt("count", 0)
         val e = p.edit()
         e.putInt("count", folders.size)
         folders.forEachIndexed { i, f ->
@@ -52,7 +57,7 @@ object LocalFolderStore {
             e.putString("f${i}_name", f.name)
             e.putString("f${i}_uri", f.treeUriString)
         }
-        for (i in folders.size until p.getInt("count", 0)) {
+        for (i in folders.size until oldCount) {
             listOf("id", "name", "uri").forEach { field -> e.remove("f${i}_$field") }
         }
         e.apply()

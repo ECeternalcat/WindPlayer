@@ -46,7 +46,10 @@ fun main(args: Array<String>) {
     val player = MpvPlayer()
     val vfsManager = VfsManager()
     val osdEvents = MutableSharedFlow<String>(extraBufferCapacity = 8)
-    val dropEvents = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    // replay=1 so the command-line/open-with initial file is redelivered to App's
+    // LaunchedEffect(flows.dropFilePath) even though it subscribes AFTER main()
+    // emits (composePanel.setContent schedules composition asynchronously).
+    val dropEvents = MutableSharedFlow<String>(replay = 1, extraBufferCapacity = 4)
     val playlistToggle = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val cheatsheetToggle = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
 
@@ -57,6 +60,14 @@ fun main(args: Array<String>) {
 
     val initialSettings = loadSettings()
     I18n.current = initialSettings.language
+
+    // M10: persistence writes (saveRecentFiles, saveSettings, saveBookmarks) are
+    // disk I/O that should NOT run on the Compose snapshot-apply thread. Route
+    // them through a single-thread daemon executor so they're sequential (no
+    // interleaving of file writes) but never block the UI.
+    val persistExec = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "windplayer-persist").apply { isDaemon = true }
+    }
     // Apply the colour palette BEFORE the first Compose frame so dark mode
     // doesn't flash light on startup. App.kt keeps it in sync at runtime.
     val initialDark = when (initialSettings.themeMode) {
@@ -89,10 +100,35 @@ fun main(args: Array<String>) {
         )
         rootPanel.add(composePanel)
 
+        // H27: keep the AWT panel background in sync with runtime theme changes.
+        // WindColors.CanvasCream is a Compose mutableStateOf that flips when the
+        // user toggles dark mode (or system theme changes). Without this, a
+        // resize/load after a runtime theme switch reveals a stale-colour rectangle
+        // behind the Compose layer. 500ms polling is negligible on the EDT.
+        val themeSyncTimer = javax.swing.Timer(500) {
+            val cc = dev.windplayer.ui.WindColors.CanvasCream
+            val target = Color(cc.red, cc.green, cc.blue)
+            if (composePanel.background != target) {
+                composePanel.background = target
+            }
+        }
+        themeSyncTimer.start()
+
         frame.contentPane.add(rootPanel)
         val savedBounds = loadWindowState()
         if (savedBounds != null) {
             frame.bounds = savedBounds
+            // M19: re-apply maximized state after bounds so windows that were
+            // closed maximized reopen maximized on the correct screen.
+            val prefs = java.util.Properties()
+            try {
+                java.io.FileInputStream(java.io.File(
+                    java.io.File(System.getProperty("user.home"), ".windplayer"), "window.properties"
+                )).use { prefs.load(it) }
+                if (prefs.getProperty("maximized", "false").toBoolean()) {
+                    frame.extendedState = JFrame.MAXIMIZED_BOTH
+                }
+            } catch (_: Exception) {}
         } else {
             frame.size = Dimension(1280, 720)
         }
@@ -110,6 +146,13 @@ fun main(args: Array<String>) {
                     ?: return false
                 for (item in fileList) {
                     val file = item as? File ?: continue
+                    if (file.isDirectory) {
+                        // L15: dropped folders are ignored (browsing starts from
+                        // the file browser, not from an external drag). Notify
+                        // so the user knows why nothing happened.
+                        osdEvents.tryEmit("Cannot open folder: ${file.name}")
+                        continue
+                    }
                     val ext = file.name.substringAfterLast('.', "").lowercase()
                     if (ext in VIDEO_EXTENSIONS) {
                         dropEvents.tryEmit(file.absolutePath)
@@ -181,11 +224,11 @@ fun main(args: Array<String>) {
                 player.create()
                 player.setOption("wid", wid)
                 player.setOption("vo", "gpu")
-                player.setOption("hwdec", if (settingsState.hwdecAuto) "auto" else "no")
                 player.setOption("keep-open", "yes")
                 player.setOption("idle", "yes")
                 player.setOption("sub-font-size", settingsState.subFontSize.toString())
                 player.setOption("sub-border-size", settingsState.subBorderSize.toString())
+                applyMpvStartupOptions(player, settingsState)
                 player.initialize()
 
                 layoutManager.switchTo(AppScreen.BROWSER)
@@ -227,26 +270,30 @@ fun main(args: Array<String>) {
                     override fun onSettingsChanged(newSettings: PlayerSettings) {
                         settingsState = newSettings
                         I18n.current = newSettings.language
-                        saveSettings(newSettings)
+                        persistExec.execute { saveSettings(newSettings) }
                         applyMpvSettings(player, newSettings)
                     }
                     override fun onFilePlayed(name: String, path: String, isLocal: Boolean, serverId: String?) {
                         recentFilesState = updateRecentFiles(recentFilesState, name, path, isLocal, serverId)
-                        saveRecentFiles(recentFilesState)
+                        val snap = recentFilesState
+                        persistExec.execute { saveRecentFiles(snap) }
                     }
                     override fun onPositionUpdate(filePath: String, position: Double, duration: Double) {
                         recentFilesState = updateRecentPosition(recentFilesState, filePath, position, duration)
-                        saveRecentFiles(recentFilesState)
+                        val snap = recentFilesState
+                        persistExec.execute { saveRecentFiles(snap) }
                     }
                     override fun onBookmarkAdded(path: String) {
                         if (bookmarksState.none { it == path }) {
                             bookmarksState = bookmarksState + path
-                            saveBookmarks(bookmarksState)
+                            val snap = bookmarksState
+                            persistExec.execute { saveBookmarks(snap) }
                         }
                     }
                     override fun onBookmarkRemoved(path: String) {
                         bookmarksState = bookmarksState.filterNot { it == path }
-                        saveBookmarks(bookmarksState)
+                        val snap = bookmarksState
+                        persistExec.execute { saveBookmarks(snap) }
                     }
                 },
                 flows = DesktopAppFlows(

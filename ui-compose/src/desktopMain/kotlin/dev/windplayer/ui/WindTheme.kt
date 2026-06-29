@@ -52,6 +52,34 @@ object WindColors {
     /** Ghost-watermark tone — barely-visible cream-on-cream (DESIGN.md §4). */
     var GhostWatermark by mutableStateOf(Color(0xFFE8E2DA))
 
+    /** When non-null, overrides SignalOrange/LightSignalOrange/ClayBrown. */
+    var accentOverride by mutableStateOf<Color?>(null)
+        private set
+
+    private var isDarkMode = false
+
+    /**
+     * Override the accent colour (Signal Orange → dynamic/system primary).
+     * Pass `null` to restore the default WindPlayer orange.
+     */
+    fun applyAccent(color: Color?) {
+        accentOverride = color
+        applyAccentToColors()
+    }
+
+    private fun applyAccentToColors() {
+        if (accentOverride != null) {
+            SignalOrange = accentOverride!!
+            LightSignalOrange = accentOverride!!.copy(alpha = 0.78f)
+            ClayBrown = accentOverride!!.copy(alpha = 0.55f)
+        } else {
+            // Restore default orange based on current theme
+            SignalOrange = if (isDarkMode) Color(0xFFE8511A) else Color(0xFFCF4500)
+            LightSignalOrange = Color(0xFFF37338)
+            ClayBrown = if (isDarkMode) Color(0xFFC76A38) else Color(0xFF9A3A0A)
+        }
+    }
+
     /**
      * Fixed dark "media" surface — player chrome sits over video and must stay
      * dark regardless of the app theme. These never flip.
@@ -64,6 +92,7 @@ object WindColors {
 
     /** Swap the whole palette. Idempotent — reassigning the same value is a no-op. */
     fun applyDark(dark: Boolean) {
+        isDarkMode = dark
         if (dark) {
             CanvasCream = Color(0xFF141413)
             LiftedCream = Color(0xFF1F1D1C)
@@ -95,6 +124,8 @@ object WindColors {
             LinkBlue = Color(0xFF3860BE)
             GhostWatermark = Color(0xFFE8E2DA)
         }
+        // Re-apply accent override if active (applyDark sets defaults above).
+        applyAccentToColors()
     }
 }
 
@@ -248,6 +279,59 @@ fun windColorScheme(isDark: Boolean): ColorScheme = if (isDark) {
         secondary = Color(0xFF9A3A0A),
         onSecondary = Color(0xFFFFFFFF),
         tertiary = Color(0xFFCF4500),
+        onTertiary = Color(0xFFFFFFFF),
+        background = Color(0xFFF3F0EE),
+        onBackground = Color(0xFF141413),
+        surface = Color(0xFFFCFBFA),
+        onSurface = Color(0xFF141413),
+        surfaceVariant = Color(0xFFFFFFFF),
+        onSurfaceVariant = Color(0xFF696969),
+        surfaceContainer = Color(0xFFFFFFFF),
+        surfaceContainerHigh = Color(0xFFFFFFFF),
+        outline = Color(0xFFE2DDD5),
+        outlineVariant = Color(0xFFD1CDC7),
+        error = Color(0xFFCF4500),
+        onError = Color(0xFFFFFFFF)
+    )
+}
+
+/**
+ * Auto color scheme — M3 baseline palette as desktop fallback.
+ * Future: extract from Windows registry accent color (phase 2).
+ * Keeps our cream background/surface, only swaps the primary/accent.
+ */
+fun windColorSchemeAuto(isDark: Boolean): ColorScheme = if (isDark) {
+    darkColorScheme(
+        primary = Color(0xFFD0BCFF),
+        onPrimary = Color(0xFF381E72),
+        primaryContainer = Color(0xFF4F378B),
+        onPrimaryContainer = Color(0xFFEADDFF),
+        secondary = Color(0xFFCCC2DC),
+        onSecondary = Color(0xFF332D41),
+        tertiary = Color(0xFFEFB8C8),
+        onTertiary = Color(0xFF492532),
+        background = Color(0xFF141413),
+        onBackground = Color(0xFFF3F0EE),
+        surface = Color(0xFF1F1D1C),
+        onSurface = Color(0xFFF3F0EE),
+        surfaceVariant = Color(0xFF282624),
+        onSurfaceVariant = Color(0xFFA8A29A),
+        surfaceContainer = Color(0xFF282624),
+        surfaceContainerHigh = Color(0xFF312E2C),
+        outline = Color(0xFF3A3735),
+        outlineVariant = Color(0xFF6E6A64),
+        error = Color(0xFFE8511A),
+        onError = Color(0xFFFFFFFF)
+    )
+} else {
+    lightColorScheme(
+        primary = Color(0xFF6750A4),
+        onPrimary = Color(0xFFFFFFFF),
+        primaryContainer = Color(0xFFEADDFF),
+        onPrimaryContainer = Color(0xFF21005D),
+        secondary = Color(0xFF625B71),
+        onSecondary = Color(0xFFFFFFFF),
+        tertiary = Color(0xFF7D5260),
         onTertiary = Color(0xFFFFFFFF),
         background = Color(0xFFF3F0EE),
         onBackground = Color(0xFF141413),

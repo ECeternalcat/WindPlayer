@@ -89,7 +89,10 @@ private fun extractEpisodeFeature(filename: String): String? {
         if (match != null) {
             val season = match.groupValues.getOrNull(1)
             val episode = match.groupValues.getOrNull(2)
-            if (episode != null && season != null && season != episode) {
+            // M1: compare numerically, not as strings. "1" != "01" as strings,
+            // so S1E1 (season=1, ep=1) would bypass the S##E## branch and fall
+            // through to EP001 — breaking structured matching against S01E01 subs.
+            if (episode != null && season != null && season.toIntOrNull() != episode.toIntOrNull()) {
                 return "S${season.padStart(2, '0')}E${episode.padStart(2, '0')}"
             }
             val ep = match.groupValues[1]

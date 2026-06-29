@@ -15,22 +15,41 @@ import dev.windplayer.mpv.MpvPlayer
 import dev.windplayer.ui.I18n
 import dev.windplayer.ui.PlayerSettings
 import dev.windplayer.ui.ThemeMode
+import dev.windplayer.ui.AccentColor
 import dev.windplayer.vfs.FileNode
 import dev.windplayer.vfs.ServerConfig
 import dev.windplayer.vfs.VfsProtocol
 import dev.windplayer.vfs.isVideo
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
-fun MobileApp(externalVideoUri: Uri? = null) {
+fun MobileApp(
+    externalVideoUri: Uri? = null,
+    onExternalVideoConsumed: () -> Unit = {}
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var screen by remember { mutableStateOf("browser") }
-    var settings by remember { mutableStateOf(SettingsHelper.load(context)) }
+    var settings by remember {
+        mutableStateOf(SettingsHelper.load(context)).also {
+            // L6: set I18n synchronously during initial composition so the first
+            // frame renders in the correct language (previously a LaunchedEffect
+            // set it AFTER composition → one frame of English on non-en cold start).
+            I18n.current = it.value.language
+        }
+    }
     var pendingFile by remember { mutableStateOf<FileNode?>(null) }
     val player = remember { MpvPlayer() }
+    // H7: standalone scope for native teardown. rememberCoroutineScope()
+    // gets CANCELLED by Compose before onDispose runs, which would skip
+    // player.dispose() → native handle leak across Activity recreation.
+    // This remembered scope survives composition disposal and only dies
+    // when the launched coroutine completes + the scope is GC'd.
+    val teardownScope = remember { CoroutineScope(SupervisorJob() + Dispatchers.IO) }
 
     // Defense-in-depth: ensure mpv native handle + observer are released when
     // MobileApp leaves composition (e.g. Activity destroyed by the system).
@@ -38,9 +57,9 @@ fun MobileApp(externalVideoUri: Uri? = null) {
     DisposableEffect(player) {
         onDispose {
             // H14: dispose() synchronously calls MPVLib.destroy() (JNI), which
-            // can take 100ms–1s+. Run on Dispatchers.IO to avoid blocking the
-            // main thread during Activity teardown.
-            scope.launch(Dispatchers.IO) {
+            // can take 100ms–1s+. Run on teardownScope (NOT scope) to avoid
+            // the coroutine being cancelled mid-teardown by Compose.
+            teardownScope.launch {
                 try { player.dispose() } catch (_: Exception) {}
             }
         }
@@ -97,6 +116,11 @@ fun MobileApp(externalVideoUri: Uri? = null) {
         serverError = null
         serverFiles = try {
             withContext(Dispatchers.IO) { MobileVfsManager.listDirectory(srv, serverPath) }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // H21: re-throw — if this LaunchedEffect was cancelled because the
+            // user navigated to another directory, we must NOT overwrite the
+            // newer coroutine's result with emptyList().
+            throw e
         } catch (e: Exception) {
             serverError = e.message ?: "Connection failed"
             activeServer = null
@@ -146,6 +170,10 @@ fun MobileApp(externalVideoUri: Uri? = null) {
         resumeSid = null
         resumeAid = null
         resumeSpeed = 0.0
+        // H19: clear the consumed URI so re-sharing the SAME file triggers
+        // this LaunchedEffect again (its key — the URI — would otherwise be
+        // unchanged and the share silently ignored).
+        onExternalVideoConsumed()
     }
 
     val configuration = LocalConfiguration.current
@@ -164,8 +192,30 @@ fun MobileApp(externalVideoUri: Uri? = null) {
         }
     }
 
+    // Accent color: WindPlayer orange or Auto (Material You dynamic on Android 12+)
+    val accent = settings.accentColor
+    // isDynamicColorAvailable() is not available in CMP 1.9.0's Material3 fork;
+    // SDK >= S (Android 12) is the equivalent check it performs internally.
+    val dynamicSupported = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S
+    val cs = when (accent) {
+        AccentColor.WINDPLAYER -> androidColorScheme(isDark)
+        AccentColor.AUTO -> {
+            if (dynamicSupported) {
+                if (isDark) androidx.compose.material3.dynamicDarkColorScheme(context)
+                else androidx.compose.material3.dynamicLightColorScheme(context)
+            } else {
+                androidColorScheme(isDark)
+            }
+        }
+    }
+    LaunchedEffect(accent, isDark) {
+        WindColors.applyAccent(
+            if (accent == AccentColor.AUTO && dynamicSupported) cs.primary else null
+        )
+    }
+
     MaterialTheme(
-        colorScheme = androidColorScheme(isDark),
+        colorScheme = cs,
         typography = WindTypography
     ) {
         // Push the body style (carrying Sofia Sans) into LocalTextStyle so raw
@@ -193,26 +243,34 @@ fun MobileApp(externalVideoUri: Uri? = null) {
                     val sid = playServerConfig?.id
                     val treeUri = if (proto == VfsProtocol.LOCAL) SafHelper.loadTreeUri(context)?.toString() else null
                     val parentDocId = if (proto == VfsProtocol.LOCAL) SafPlaylistBuilder.extractParentDocId(playedFile.path) else null
-                    history = HistoryStore.add(context, HistoryEntry(
-                        name = playedFile.name, path = playedFile.path,
-                        protocol = proto, serverId = sid,
-                        timestamp = System.currentTimeMillis(),
-                        parentDocId = parentDocId, treeUriString = treeUri
-                    ))
+                    // H16: HistoryStore.add does SharedPreferences load + commit on
+                    // the calling thread. Dispatch to IO to avoid main-thread jank
+                    // during FileLoaded, then update Compose state on Main.
+                    scope.launch(Dispatchers.IO) {
+                        val updated = HistoryStore.add(context, HistoryEntry(
+                            name = playedFile.name, path = playedFile.path,
+                            protocol = proto, serverId = sid,
+                            timestamp = System.currentTimeMillis(),
+                            parentDocId = parentDocId, treeUriString = treeUri
+                        ))
+                        withContext(Dispatchers.Main) { history = updated }
+                    }
                 },
                 onPositionUpdate = { path, pos, dur ->
-                    HistoryStore.updatePosition(context, path, pos, dur)
+                    // H16: periodic (every 5s) SharedPreferences write — must not
+                    // block the main thread during playback.
+                    scope.launch(Dispatchers.IO) { HistoryStore.updatePosition(context, path, pos, dur) }
                 },
                 onPlaybackStateUpdate = { path, sTrack, aTrack, spd ->
-                    HistoryStore.updatePlaybackState(context, path, sTrack, aTrack, spd)
+                    scope.launch(Dispatchers.IO) { HistoryStore.updatePlaybackState(context, path, sTrack, aTrack, spd) }
                 },
-                onBack = {
-                    try { player.command("stop") } catch (_: Exception) {}
-                    try { player.detachSurface() } catch (_: Exception) {}
-                    // H14: dispose off the main thread to avoid ANR during teardown.
-                    scope.launch(Dispatchers.IO) {
-                        try { player.dispose() } catch (_: Exception) {}
-                    }
+                 onBack = {
+                     try { player.command("stop") } catch (_: Exception) {}
+                     try { player.detachSurface() } catch (_: Exception) {}
+                     // H14: dispose off the main thread to avoid ANR during teardown.
+                     teardownScope.launch {
+                         try { player.dispose() } catch (_: Exception) {}
+                     }
                     pendingFile = null
                     directoryVideos = emptyList()
                     // Reload history to pick up thumbnails generated during playback.

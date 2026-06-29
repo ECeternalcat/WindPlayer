@@ -44,7 +44,10 @@ object MobileVfsManager {
     suspend fun downloadAuxFile(server: ServerConfig, file: FileNode, cacheDir: File): File? {
         val safeName = sanitizeCacheName(file.name)
         val localFile = File(cacheDir, safeName)
-        if (localFile.exists()) return localFile
+        // M22: verify cached file isn't a zero-byte leftover from an interrupted
+        // download. Without this, a corrupted cache entry permanently prevents
+        // the subtitle from loading.
+        if (localFile.exists() && localFile.length() > 0) return localFile
         val client = createClient(server)
         return try {
             cacheDir.mkdirs()

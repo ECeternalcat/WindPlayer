@@ -46,6 +46,7 @@ fun PlayerScreen(
     vfsManager: VfsManager? = null,
     isFullscreen: Boolean = false,
     autoPlayNext: Boolean = false,
+    initialHwdec: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     // Deconstruct PlaybackParams into the local names the body uses.
@@ -69,12 +70,17 @@ fun PlayerScreen(
     var isSeeking by remember { mutableStateOf(false) }
     var seekTarget by remember { mutableStateOf(0.0) }
     var subtitlesAdded by remember { mutableStateOf(false) }
+    var audioAdded by remember { mutableStateOf(false) }
     var showTrackSheet by remember { mutableStateOf(false) }
     var showPlaylist by remember { mutableStateOf(false) }
     var volume by remember { mutableStateOf(100L) }
     var isMuted by remember { mutableStateOf(false) }
     var isVolumeDragging by remember { mutableStateOf(false) }
-    var hwdecAuto by remember { mutableStateOf(true) }
+    // H24: seed from the host's setting rather than hardcoding true. Without
+    // this, the lightning-bulb icon always shows "on" even when the user
+    // disabled HW decode in Settings (the mpv option was correctly set from
+    // settingsState.hwdecAuto in Main.kt, but the UI disagreed).
+    var hwdecAuto by remember(initialHwdec) { mutableStateOf(initialHwdec) }
     var speed by remember { mutableStateOf(1.0) }
     var osdText by remember { mutableStateOf("") }
     var eofAutoPlayed by remember { mutableStateOf(false) }
@@ -92,7 +98,6 @@ fun PlayerScreen(
         player.observeProperty("speed", MpvFormat.DOUBLE)
         player.observeProperty("duration", MpvFormat.DOUBLE)
         player.observeProperty("eof-reached", MpvFormat.FLAG)
-
         launch {
             // Only `time-pos` needs polling (high-frequency, ~frame rate).
             // Plus a periodic position-report back to the host (every 25 ticks = 5s).
@@ -140,6 +145,19 @@ fun PlayerScreen(
                                 } catch (_: Exception) {}
                             }
                             subtitlesAdded = true
+                        }
+
+                        // audio-add requires an active file, so it must run
+                        // AFTER loadfile resolves (i.e. here in FileLoaded),
+                        // not before. Sending it pre-loadfile silently fails
+                        // and the external audio track is lost forever.
+                        if (!audioAdded && initialExternalAudioUrls.isNotEmpty()) {
+                            initialExternalAudioUrls.forEach { audioUrl ->
+                                try {
+                                    player.command("audio-add", audioUrl)
+                                } catch (_: Exception) {}
+                            }
+                            audioAdded = true
                         }
 
                         if (!resumeApplied && resumePosition > 1.0) {
@@ -220,6 +238,14 @@ fun PlayerScreen(
         }
     }
 
+    // H8: unregister the 6 property observers registered in LaunchedEffect above.
+    // LaunchedEffect cancels its coroutine on dispose but does NOT call back into
+    // mpv to unobserve — without this, each Browser→Player→Browser→Player cycle
+    // adds another batch and every property change fires N callbacks.
+    DisposableEffect(player) {
+        onDispose { player.clearPropertyObservers() }
+    }
+
     LaunchedEffect(flows.osdEvents) {
         flows.osdEvents?.collectLatest { text ->
             osdText = text
@@ -245,13 +271,16 @@ fun PlayerScreen(
         }
     }
 
-    LaunchedEffect(initialFilePath) {
+    // M6: include resumePosition in the key so replaying the same file with a
+    // different saved position (e.g. from Recent) re-triggers load + resume-seek.
+    LaunchedEffect(initialFilePath, resumePosition) {
         if (initialFilePath.isNotBlank()) {
             fileLoaded = false
             isPlaying = false
             position = 0.0
             duration = 0.0
             subtitlesAdded = false
+            audioAdded = false
             speed = 1.0
             isSeeking = false
             eofAutoPlayed = false
@@ -260,9 +289,8 @@ fun PlayerScreen(
             for ((key, value) in initialMpvOptions) {
                 player.setProperty(key, value)
             }
-            for (audioUrl in initialExternalAudioUrls) {
-                player.command("audio-add", audioUrl)
-            }
+            // External audio tracks are attached in the FileLoaded handler —
+            // mpv rejects audio-add before a file is loaded.
             player.command("loadfile", initialFilePath)
         }
     }

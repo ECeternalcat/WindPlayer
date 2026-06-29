@@ -37,6 +37,31 @@ object WindColors {
     /** Ghost-watermark tone — barely-visible cream-on-cream (DESIGN.md §4). */
     var GhostWatermark by mutableStateOf(Color(0xFFE8E2DA))
 
+    /** When non-null, overrides accent colours. */
+    var accentOverride by mutableStateOf<Color?>(null)
+        private set
+
+    private var isDarkMode = false
+
+    fun applyAccent(color: Color?) {
+        accentOverride = color
+        applyAccentToColors()
+    }
+
+    private fun applyAccentToColors() {
+        if (accentOverride != null) {
+            SignalOrange = accentOverride!!
+            LightSignalOrange = accentOverride!!.copy(alpha = 0.78f)
+            ClayBrown = accentOverride!!.copy(alpha = 0.55f)
+            Danger = accentOverride!!
+        } else {
+            SignalOrange = if (isDarkMode) Color(0xFFE8511A) else Color(0xFFCF4500)
+            LightSignalOrange = Color(0xFFF37338)
+            ClayBrown = if (isDarkMode) Color(0xFFC76A38) else Color(0xFF9A3A0A)
+            Danger = if (isDarkMode) Color(0xFFE8511A) else Color(0xFFCF4500)
+        }
+    }
+
     /** Fixed dark "media" surface — player chrome over video never flips. */
     val MediaInk = Color(0xFF141413)
     val MediaSurface = Color(0xFF2A2826)
@@ -45,6 +70,7 @@ object WindColors {
     val MediaAccent = Color(0xFFF37338)
 
     fun applyDark(dark: Boolean) {
+        isDarkMode = dark
         if (dark) {
             CanvasCream = Color(0xFF141413)
             LiftedCream = Color(0xFF1F1D1C)
@@ -78,6 +104,7 @@ object WindColors {
             Danger = Color(0xFFCF4500)
             GhostWatermark = Color(0xFFE8E2DA)
         }
+        applyAccentToColors()
     }
 }
 

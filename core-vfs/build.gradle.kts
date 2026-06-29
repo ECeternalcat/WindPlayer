@@ -33,7 +33,6 @@ kotlin {
                 implementation(libs.ktor.client.cio)
                 implementation(libs.sshj)
                 implementation(libs.commons.net)
-                implementation(libs.slf4j.nop)
             }
         }
 
@@ -41,6 +40,10 @@ kotlin {
             dependsOn(jvmShared)
             dependencies {
                 implementation(libs.jna.platform)
+                // slf4j-nop only on desktop (silence SSHJ's chatty INFO logs).
+                // Android gets no SLF4J binding → SSHJ warnings are visible in
+                // logcat, which is strictly better than total silence.
+                implementation(libs.slf4j.nop)
             }
         }
 

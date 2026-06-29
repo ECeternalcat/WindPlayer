@@ -49,12 +49,19 @@ class FtpClient : VfsClient {
             // After login, FTPS must execute PROT P to protect the data channel
             // (the control channel is already encrypted by AUTH TLS). For plain
             // FTP this is a no-op / would throw, so guard with a type check.
+            // H11: fail-closed — if PROT P fails we disconnect rather than
+            // continuing with a cleartext data channel. The control channel
+            // being encrypted gives the user a false sense of security while
+            // the actual file data (including directory listings and file
+            // transfers) would flow in plaintext.
             if (client is FTPSClient) {
                 try {
                     client.execPBSZ(0)
                     client.execPROT("P")
                 } catch (e: Exception) {
-                    LOG.warning("FTPS data channel protection (PROT P) failed — data channel may be cleartext: ${e.message}")
+                    LOG.warning("FTPS data channel protection (PROT P) failed — refusing to continue with cleartext data: ${e.message}")
+                    client.disconnect()
+                    return@withContext false
                 }
             }
             client.enterLocalPassiveMode()
@@ -99,8 +106,14 @@ class FtpClient : VfsClient {
 
     override suspend fun resolveUrl(path: String): String {
         val cfg = config ?: throw IllegalStateException("No config")
+        // C3: when the user opts into TLS, use the `ftps://` scheme so mpv /
+        // FFmpeg opens the control channel with AUTH TLS and negotiates an
+        // encrypted data channel. Previously the scheme was hardcoded to
+        // `ftp://` — the listing connection was encrypted (via FTPSClient in
+        // connect()) but the mpv playback stream sent credentials + video
+        // in cleartext, negating the user's TLS opt-in.
         return buildUrlWithCredentials(
-            scheme = "ftp",
+            scheme = if (cfg.useTls) "ftps" else "ftp",
             username = cfg.username,
             password = cfg.password,
             host = cfg.bareHost,

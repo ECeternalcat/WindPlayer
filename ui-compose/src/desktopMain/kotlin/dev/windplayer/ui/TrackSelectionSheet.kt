@@ -329,8 +329,10 @@ private fun TrackItem(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // L8: both branches were identical (CHECK vs CHECK); the transparent
+        // tint already hides the icon when not selected. Simplified.
         Icon(
-            painter = iconPainter(if (isSelected) PhosphorIcons.CHECK else PhosphorIcons.CHECK),
+            painter = iconPainter(PhosphorIcons.CHECK),
             contentDescription = if (isSelected) "Selected" else "",
             tint = if (isSelected) WindColors.LightSignalOrange else Color.Transparent,
             modifier = Modifier.size(16.dp)

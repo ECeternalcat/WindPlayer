@@ -623,8 +623,17 @@ fun FileBrowserScreen(
             confirmButton = {
                 TextButton(onClick = {
                     val target = renameTarget!!
-                    renameTarget = null
-                    if (renameText.isNotBlank() && renameText != target.name) {
+                    // M13: reject Windows-invalid filename characters and path
+                    // traversal attempts before hitting the filesystem.
+                    val invalid = Regex("""[\\/:*?"<>|]""")
+                    if (renameText.isBlank()) {
+                        renameTarget = null
+                    } else if (renameText.contains(invalid) || renameText.contains("..")) {
+                        errorText = I18n.get("invalid_filename")
+                        renameTarget = null
+                    } else {
+                        renameTarget = null
+                        if (renameText != target.name) {
                         scope.launch {
                             val ok = if (isLocal) {
                                 vfsManager.renameLocalFile(target.path, renameText)
@@ -643,6 +652,7 @@ fun FileBrowserScreen(
                             } else {
                                 errorText = "Failed to rename file"
                             }
+                        }
                         }
                     }
                 }) { Text(I18n.get("rename")) }

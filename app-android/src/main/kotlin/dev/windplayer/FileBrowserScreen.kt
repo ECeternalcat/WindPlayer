@@ -95,9 +95,11 @@ fun FileBrowserScreen(
         } else emptyList()
     }
 
-    // Navigate up one directory on system back when inside a subfolder;
-    // at root level let the system handle back (exit screen).
-    BackHandler(enabled = dirStack.size > 1) {
+    // Navigate up one directory on system back; at the root view (empty stack)
+    // let the system handle back. H17: previously the guard was `size > 1`,
+    // so pressing back inside a saved folder (size==1) exited the app instead
+    // of returning to the folder list.
+    BackHandler(enabled = dirStack.isNotEmpty()) {
         dirStack = dirStack.dropLast(1)
     }
 
@@ -129,24 +131,35 @@ fun FileBrowserScreen(
                             val destDir = dirStack.lastOrNull()
                             if (destDir != null) {
                                 scope.launch {
-                                    val rootDoc = SafHelper.rootFromUri(context, rootTreeUri ?: return@launch) ?: return@launch
-                                    val srcFile = rootDoc.listFiles().firstOrNull { it.name == clip.name }
-                                    if (srcFile != null) {
-                                        if (clipboardIsCut) {
-                                            srcFile.renameTo(clip.name)
-                                        } else {
-                                            // Copy: create a new file and stream-copy contents.
-                                            val destFile = destDir.createFile(srcFile.type ?: "application/octet-stream", clip.name)
-                                            if (destFile != null) {
-                                                context.contentResolver.openInputStream(srcFile.uri)?.use { input ->
-                                                    context.contentResolver.openOutputStream(destFile.uri)?.use { output ->
-                                                        input.copyTo(output)
+                                    val rootDoc = SafHelper.rootFromUri(context, rootTreeUri ?: return@launch)
+                                        ?: return@launch
+                                    // C6: DocumentFile.listFiles / renameTo / createFile /
+                                    // input.copyTo are all potentially blocking on slow
+                                    // providers (Google Drive, USB-OTG). Run on IO.
+                                    val success = withContext(Dispatchers.IO) {
+                                        val srcFile = rootDoc.listFiles().firstOrNull { it.name == clip.name }
+                                        if (srcFile != null) {
+                                            if (clipboardIsCut) {
+                                                srcFile.renameTo(clip.name)
+                                            } else {
+                                                // Copy: create a new file and stream-copy contents.
+                                                val destFile = destDir.createFile(
+                                                    srcFile.type ?: "application/octet-stream", clip.name
+                                                )
+                                                if (destFile != null) {
+                                                    context.contentResolver.openInputStream(srcFile.uri)?.use { input ->
+                                                        context.contentResolver.openOutputStream(destFile.uri)?.use { output ->
+                                                            input.copyTo(output)
+                                                        }
                                                     }
-                                                }
+                                                    true
+                                                } else false
                                             }
-                                        }
+                                        } else false
                                     }
-                                    files = withContext(Dispatchers.IO) { SafHelper.listFiles(context, destDir) }
+                                    if (success) {
+                                        files = withContext(Dispatchers.IO) { SafHelper.listFiles(context, destDir) }
+                                    }
                                     clipboardFile = null
                                 }
                             }
@@ -276,8 +289,12 @@ fun FileBrowserScreen(
                         onClick = {
                             if (file.isDirectory) {
                                 val parent = dirStack.last()
-                                parent.listFiles().firstOrNull { it.name == file.name && it.isDirectory }?.let { sub ->
-                                    dirStack = dirStack + sub
+                                // C6: listFiles() on a remote provider can block.
+                                scope.launch {
+                                    val sub = withContext(Dispatchers.IO) {
+                                        parent.listFiles().firstOrNull { it.name == file.name && it.isDirectory }
+                                    }
+                                    sub?.let { dirStack = dirStack + it }
                                 }
                             } else if (file.isVideo()) {
                                 onFilePlay(file, files)
@@ -317,11 +334,17 @@ fun FileBrowserScreen(
                     contextMenuFile = null
                 }
                 SheetItem(Phosphor.TRASH, I18n.get("delete"), WindColors.SignalOrange) {
-                    val docFile = dirStack.lastOrNull()?.listFiles()?.firstOrNull { it.name == file.name }
-                    if (docFile?.delete() == true) {
-                        files = files.filterNot { it.path == file.path }
-                    }
                     contextMenuFile = null
+                    // C6: listFiles + delete can block on slow providers.
+                    scope.launch {
+                        val deleted = withContext(Dispatchers.IO) {
+                            val docFile = dirStack.lastOrNull()?.listFiles()?.firstOrNull { it.name == file.name }
+                            docFile?.delete() == true
+                        }
+                        if (deleted) {
+                            files = files.filterNot { it.path == file.path }
+                        }
+                    }
                 }
             }
         }
@@ -355,14 +378,21 @@ fun FileBrowserScreen(
             },
             confirmButton = {
                 androidx.compose.material3.TextButton(onClick = {
-                    val docFile = dirStack.lastOrNull()?.listFiles()?.firstOrNull { d -> d.name == it.name }
-                    if (docFile != null && renameText.isNotBlank()) {
-                        docFile.renameTo(renameText)
+                    val target = it
+                    val newName = renameText
+                    renameFile = null
+                    if (newName.isNotBlank()) {
+                        // C6: listFiles + renameTo can block on slow providers.
                         scope.launch {
-                            files = withContext(Dispatchers.IO) { SafHelper.listFiles(context, dirStack.last()) }
+                            val renamed = withContext(Dispatchers.IO) {
+                                val docFile = dirStack.lastOrNull()?.listFiles()?.firstOrNull { d -> d.name == target.name }
+                                docFile != null && newName.isNotBlank() && docFile.renameTo(newName)
+                            }
+                            if (renamed) {
+                                files = withContext(Dispatchers.IO) { SafHelper.listFiles(context, dirStack.last()) }
+                            }
                         }
                     }
-                    renameFile = null
                 }) { Text(I18n.get("ok"), color = WindColors.Ink, fontWeight = FontWeight.Bold) }
             },
             dismissButton = {

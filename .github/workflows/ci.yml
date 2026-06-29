@@ -49,13 +49,11 @@ jobs:
       - name: Install Android SDK components
         # AGP 9.x requires compileSdk=36; install it explicitly so the build
         # doesn't depend on AGP's auto-download (which can be flaky on CI).
-        # `|| true` so the workflow continues if a specific minor version is
-        # unavailable — AGP will fall back to the closest installed version.
         run: |
           set -x
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager "platform-tools" "platforms;android-36" || true
-          sdkmanager "build-tools;36.0.0" || sdkmanager "build-tools;36.0.1" || true
+          yes | sdkmanager --licenses > /dev/null 2>&1
+          sdkmanager "platform-tools" "platforms;android-36"
+          sdkmanager "build-tools;36.0.0" || sdkmanager "build-tools;36.0.1"
 
       - name: Create local.properties
         # AGP needs sdk.dir even with ANDROID_HOME set, on some configurations.
@@ -72,7 +70,7 @@ jobs:
         run: ./gradlew :app-desktop:compileKotlinDesktop --no-daemon --stacktrace
 
       - name: Run unit tests
-        run: ./gradlew :core-vfs:desktopTest --no-daemon --stacktrace
+        run: ./gradlew :core-vfs:allTests --no-daemon --stacktrace
 
       - name: Build Android Debug APK
         run: ./gradlew :app-android:assembleDebug --no-daemon --stacktrace

@@ -25,9 +25,11 @@ object SafHelper {
 
     fun takePermission(context: Context, uri: Uri) {
         try {
+            // Persist BOTH read and write: rename/delete/copy/move on local files
+            // after the first restart silently fail if only READ was persisted.
             context.contentResolver.takePersistableUriPermission(
                 uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             )
         } catch (_: Exception) {}
     }

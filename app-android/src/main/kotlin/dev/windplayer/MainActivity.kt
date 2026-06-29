@@ -29,7 +29,17 @@ class MainActivity : ComponentActivity() {
         initializeSshj()
         KnownHostsManager.initialize(File(filesDir, ".windplayer"))
 
-        handleIntent(intent)
+        // H18: only auto-handle the intent on a FRESH launch. After the system
+        // kills and restarts the process, getIntent() still returns the
+        // original ACTION_VIEW — replaying it would auto-play a video the
+        // user thought they'd closed. savedInstanceState != null means
+        // this is a restoration, not a fresh start.
+        if (savedInstanceState == null) {
+            handleIntent(intent)
+        }
+        // Consume the intent so a config-change recreation doesn't re-handle it.
+        @Suppress("DEPRECATION")
+        intent.removeExtra(Intent.EXTRA_STREAM)
 
         WindowCompat.setDecorFitsSystemWindows(window, false)
         // Apply the palette before the first Compose frame so dark mode doesn't
@@ -40,7 +50,10 @@ class MainActivity : ComponentActivity() {
         setContent {
             // Theming (light/dark + status-bar appearance) is owned by MobileApp
             // so it can react to PlayerSettings.themeMode and system config.
-            MobileApp(externalVideoUri = pendingVideoUri.value)
+            MobileApp(
+                externalVideoUri = pendingVideoUri.value,
+                onExternalVideoConsumed = { pendingVideoUri.value = null }
+            )
         }
     }
 
@@ -53,7 +66,9 @@ class MainActivity : ComponentActivity() {
         if (intent == null || intent.action == Intent.ACTION_MAIN) return
         val uri = when (intent.action) {
             Intent.ACTION_VIEW -> intent.data
-            Intent.ACTION_SEND -> intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+            // M27: getParcelableExtra is deprecated on API 33+. IntentCompat
+            // provides the type-safe replacement.
+            Intent.ACTION_SEND -> androidx.core.content.IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, android.net.Uri::class.java)
             else -> null
         }
         if (uri != null) pendingVideoUri.value = uri

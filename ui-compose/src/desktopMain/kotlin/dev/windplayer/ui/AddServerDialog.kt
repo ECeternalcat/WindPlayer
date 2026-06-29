@@ -100,7 +100,7 @@ fun AddServerDialog(
                     value = port,
                     onValueChange = {
                         port = it
-                        portError = it.isNotBlank() && it.toIntOrNull() == null
+                        portError = it.isNotBlank() && (it.toIntOrNull() == null || it.toInt() !in 1..65535)
                     },
                     label = I18n.get("port_hint"),
                     isError = portError

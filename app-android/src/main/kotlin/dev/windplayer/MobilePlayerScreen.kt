@@ -90,6 +90,13 @@ fun MobilePlayerScreen(
     var longPressSpeeding by remember { mutableStateOf(false) }
     var savedSpeedValue by remember { mutableStateOf(1.0) }
     var isDragging by remember { mutableStateOf(false) }
+    // H14: separate flag for slider scrubbing. `isDragging` tracks gesture
+    // drags; without this, the 200ms polling loop overwrites `position` while
+    // the user is actively scrubbing the slider, causing it to jump back.
+    var isScrubbing by remember { mutableStateOf(false) }
+    // H22: one-time prompt for WRITE_SETTINGS so the brightness gesture can
+    // control the system brightness, not just the window.
+    var brightnessPromptShown by remember { mutableStateOf(false) }
     var interactionCount by remember { mutableIntStateOf(0) }
     var currentIdx by remember { mutableIntStateOf(currentIndex) }
     var currentPfd by remember { mutableStateOf<android.os.ParcelFileDescriptor?>(null) }
@@ -151,6 +158,13 @@ fun MobilePlayerScreen(
             pendingSubtitles = emptyList()
             subtitlesAdded = false
             eofHandled = false
+            // M7: reset fileLoaded so a failed next-episode load doesn't
+            // inherit the previous file's eof-reached state and spuriously
+            // trigger auto-advance.
+            fileLoaded = false
+            // M23: clear any stale error so the UI doesn't show "Playback
+            // failed" forever after a single transient failure.
+            errorMsg = ""
             pendingResume = 0.0
             pendingResumeSid = null
             pendingResumeAid = null
@@ -280,10 +294,18 @@ fun MobilePlayerScreen(
      * history. Called on exit and on every episode transition (auto-play-next /
      * manual skip) so that episodes left via "next" still get a cover instead of
      * the default icon. Must run while mpv still holds [path]'s frame.
+     *
+     * H15: caller MUST be on Dispatchers.IO — screenshot-to-file is a
+     * synchronous JNI call (JPEG encode + disk write, ~100ms–1s).
      */
     fun captureThumbnailForPath(path: String) {
         try {
-            val safeName = "thumb_${path.hashCode().toString(16)}.jpg"
+            // M8: use SHA-256 instead of String.hashCode() (32-bit, collisions
+            // are easy across many history entries) to avoid thumbnail files
+            // overwriting each other.
+            val sha = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(path.toByteArray(Charsets.UTF_8))
+            val safeName = "thumb_${sha.joinToString("") { "%02x".format(it) }.take(32)}.jpg"
             val thumbFile = java.io.File(context.cacheDir, safeName)
             player.command("screenshot-to-file", thumbFile.absolutePath, "video")
             if (thumbFile.exists() && thumbFile.length() > 0) {
@@ -295,25 +317,30 @@ fun MobilePlayerScreen(
     /**
      * Capture current frame as thumbnail (for history display), then exit.
      * Screenshot is taken BEFORE stop/dispose so the frame is still valid.
-     * The ~100ms encode stall is acceptable at exit time.
+     * H15: the JNI screenshot call runs on IO to avoid ANR; onBack is posted
+     * back to Main after the screenshot completes.
      */
     fun captureThumbAndExit() {
         val curPath = directoryVideos.getOrNull(currentIdx)?.path ?: file.path
+        // Read properties on Main BEFORE the screenshot — they may change
+        // once we yield to IO.
+        val pos = position
+        val dur = duration
+        val spd = speed
+        val sidVal = try { player.getPropertyString("sid") } catch (_: Exception) { null }
+        val aidVal = try { player.getPropertyString("aid") } catch (_: Exception) { null }
         // Flush the latest position/tracks so exiting between 5s polling ticks
         // (or before the first tick) still records progress.
-        if (position > 0) {
+        if (pos > 0) {
             try {
-                onPositionUpdate(curPath, position, duration)
-                onPlaybackStateUpdate(
-                    curPath,
-                    player.getPropertyString("sid"),
-                    player.getPropertyString("aid"),
-                    speed
-                )
+                onPositionUpdate(curPath, pos, dur)
+                onPlaybackStateUpdate(curPath, sidVal, aidVal, spd)
             } catch (_: Exception) {}
         }
-        captureThumbnailForPath(curPath)
-        onBack()
+        scope.launch(Dispatchers.IO) {
+            captureThumbnailForPath(curPath)
+            withContext(Dispatchers.Main) { onBack() }
+        }
     }
 
     var backPressedOnce by remember { mutableStateOf(false) }
@@ -492,7 +519,7 @@ fun MobilePlayerScreen(
             delay(200)
             try {
                 isPlaying = player.getPropertyString("pause") != "yes"
-                if (!isDragging) position = player.getPropertyDouble("time-pos")
+                if (!isDragging && !isScrubbing) position = player.getPropertyDouble("time-pos")
 
                 val curPath = directoryVideos.getOrNull(currentIdx)?.path
 
@@ -600,6 +627,19 @@ fun MobilePlayerScreen(
                     Settings.System.SCREEN_BRIGHTNESS, clamped
                 )
             } catch (_: Exception) {}
+        } else if (!brightnessPromptShown) {
+            // H22: prompt the user ONCE to grant WRITE_SETTINGS so system
+            // brightness can be controlled. Without this, the gesture only
+            // adjusts window brightness and "restore on exit" is a no-op.
+            brightnessPromptShown = true
+            Toast.makeText(context, I18n.get("brightness_perm_hint"), Toast.LENGTH_LONG).show()
+            try {
+                val intent = android.content.Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS).apply {
+                    data = android.net.Uri.parse("package:${context.packageName}")
+                    flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                context.startActivity(intent)
+            } catch (_: Exception) {}
         }
         val window = (context as? android.app.Activity)?.window
         window?.attributes = window?.attributes?.apply { this.screenBrightness = clamped / 255f }
@@ -622,6 +662,9 @@ fun MobilePlayerScreen(
                 var startX = 0f; var startY = 0f; var mode = -1
                 var startPos = 0.0; var startVol = 0; var startBright = 0
                 var directionLocked = false
+                // M16: throttle brightness/volume gestures to ~30Hz to avoid
+                // per-pixel window.attributes relayout + setStreamVolume IPC.
+                var lastGestureApply = 0L
                 detectDragGestures(
                     onDragStart = { offset ->
                         startX = offset.x; startY = offset.y
@@ -668,11 +711,19 @@ fun MobilePlayerScreen(
                                 } catch (_: Exception) {}
                             }
                             1 -> { // vertical left = brightness
-                                setBrightness(startBright + (dy / size.height * 255).toInt())
+                                val now = System.currentTimeMillis()
+                                if (now - lastGestureApply > 33) {
+                                    lastGestureApply = now
+                                    setBrightness(startBright + (dy / size.height * 255).toInt())
+                                }
                             }
                             2 -> { // vertical right = volume
-                                val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                                setVol(startVol + (dy / size.height * max).toInt())
+                                val now = System.currentTimeMillis()
+                                if (now - lastGestureApply > 33) {
+                                    lastGestureApply = now
+                                    val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                                    setVol(startVol + (dy / size.height * max).toInt())
+                                }
                             }
                         }
                     }
@@ -871,8 +922,11 @@ fun MobilePlayerScreen(
                             Text(formatDuration(position), color = Color.White, fontSize = 11.sp)
                             Slider(
                                 value = position.toFloat().coerceIn(0f, duration.toFloat()),
-                                onValueChange = { position = it.toDouble() },
-                                onValueChangeFinished = { player.setProperty("time-pos", "%.3f".format(position)) },
+                                onValueChange = { isScrubbing = true; position = it.toDouble() },
+                                onValueChangeFinished = {
+                                    player.setProperty("time-pos", "%.3f".format(position))
+                                    isScrubbing = false
+                                },
                                 valueRange = 0f..duration.toFloat(),
                                 modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
                                 colors = SliderDefaults.colors(
