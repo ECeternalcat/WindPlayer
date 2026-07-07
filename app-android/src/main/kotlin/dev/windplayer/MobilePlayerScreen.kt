@@ -3,9 +3,11 @@ package dev.windplayer
 import android.media.AudioManager
 import android.net.Uri
 import android.provider.Settings
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -39,6 +41,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import dev.windplayer.mpv.MpvEvent
 import dev.windplayer.mpv.MpvPlayer
 import dev.windplayer.ui.I18n
+import dev.windplayer.ui.WindMotion
 import dev.windplayer.vfs.FileNode
 import dev.windplayer.vfs.MatchedTrackType
 import dev.windplayer.vfs.ServerConfig
@@ -47,7 +50,9 @@ import dev.windplayer.vfs.VfsProtocol
 import dev.windplayer.vfs.formatDuration
 import dev.windplayer.vfs.isVideo
 import dev.windplayer.vfs.matchExternalTracks
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -75,6 +80,13 @@ fun MobilePlayerScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    // CON-2: standalone scope for native/SSH teardown on dispose. Compose
+    // cancels `scope` (from rememberCoroutineScope) BEFORE onDispose runs,
+    // so any cleanup launched there would be cancelled mid-flight. SSH
+    // disconnect via streamProxy.closeSession / streamProxy.stop can block
+    // on unresponsive hosts (sshj default socket timeout is long), which
+    // would ANR if done synchronously on the Main (Applier) thread.
+    val teardownScope = remember { CoroutineScope(SupervisorJob() + Dispatchers.IO) }
     var controlsVisible by remember { mutableStateOf(true) }
     var isPlaying by remember { mutableStateOf(false) }
     var position by remember { mutableStateOf(0.0) }
@@ -403,7 +415,10 @@ fun MobilePlayerScreen(
             window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             controller?.show(WindowInsetsCompat.Type.systemBars())
             // Restore window brightness to follow system.
-            window?.attributes = window?.attributes?.apply { this.screenBrightness = -1f }
+            // Kotlin smart-casts `window` to non-null here because the LHS
+            // `window?.attributes =` is a no-op when window is null, so the
+            // RHS evaluation can safely assume non-null receiver.
+            window?.attributes = window.attributes.apply { this.screenBrightness = -1f }
             // Restore system brightness if we changed it.
             if (hasWriteSettings && originalSystemBrightness >= 0) {
                 try {
@@ -414,13 +429,24 @@ fun MobilePlayerScreen(
                     )
                 } catch (_: Exception) {}
             }
-            // Release any open ParcelFileDescriptor
-            try { currentPfd?.close() } catch (_: Exception) {}
+            // CON-2: PFD close + SSH teardown (streamProxy.closeSession +
+            // streamProxy.stop) involve network I/O and can block for the
+            // socket timeout on unresponsive hosts. Dispatch to teardownScope
+            // (Dispatchers.IO) to avoid ANR / StrictMode network-on-main-thread
+            // violations. The captured references are cleared after launch to
+            // prevent re-entrant use; the launched block uses its own snapshot.
+            val pfdToClose = currentPfd
+            val sessionsToClose = streamSessionIds
+            val proxyToStop = streamProxy
             currentPfd = null
-            // Tear down the local SFTP HTTP proxy and its sessions.
-            streamSessionIds.forEach { streamProxy.closeSession(it) }
             streamSessionIds = emptyList()
-            try { streamProxy.stop() } catch (_: Exception) {}
+            teardownScope.launch {
+                try { pfdToClose?.close() } catch (_: Exception) {}
+                sessionsToClose.forEach {
+                    try { proxyToStop.closeSession(it) } catch (_: Exception) {}
+                }
+                try { proxyToStop.stop() } catch (_: Exception) {}
+            }
         }
     }
 
@@ -510,6 +536,27 @@ fun MobilePlayerScreen(
                 }
                 else -> {}
             }
+        }
+    }
+
+    // §7 Hot Reload: observe the subtitle-mount bus. When the translation
+    // pipeline completes (foreground service), the SRT path is published here.
+    // We mount it into mpv via `sub-add` so the user sees the subtitle
+    // immediately without any manual action.
+    // BUG-4: key on fileLoaded so the collector restarts when playback becomes
+    // ready — if the translation completes while the player is reloading, the
+    // StateFlow value persists and is picked up on the next composition.
+    LaunchedEffect(fileLoaded) {
+        val path = dev.windplayer.translate.TranslateService.pendingSubtitleMount.value
+        if (path != null) {
+            try {
+                player.command("sub-add", path, "select")
+                osdText = dev.windplayer.ui.I18n.get("gen_sub_ready")
+                Log.i("MobilePlayerScreen", "Auto-mounted subtitle: $path")
+            } catch (e: Exception) {
+                Log.w("MobilePlayerScreen", "sub-add failed: ${e.message}")
+            }
+            dev.windplayer.translate.TranslateService.pendingSubtitleMount.value = null
         }
     }
 
@@ -642,7 +689,8 @@ fun MobilePlayerScreen(
             } catch (_: Exception) {}
         }
         val window = (context as? android.app.Activity)?.window
-        window?.attributes = window?.attributes?.apply { this.screenBrightness = clamped / 255f }
+        // Kotlin smart-cast: same as in DisposableEffect.onDispose above.
+        window?.attributes = window.attributes.apply { this.screenBrightness = clamped / 255f }
         osdText = "${I18n.get("osd_brightness")}: ${clamped * 100 / 255}%"
     }
 
@@ -847,10 +895,16 @@ fun MobilePlayerScreen(
             modifier = Modifier.fillMaxSize()
         )
 
-        // OSD
-        if (osdText.isNotEmpty()) {
+        // OSD — WindMotion: fade + scale so feedback feels alive (was hard cut).
+        AnimatedVisibility(
+            visible = osdText.isNotEmpty(),
+            enter = fadeIn(animationSpec = tween(WindMotion.DurFast, easing = WindMotion.EasingStandard)) +
+                scaleIn(initialScale = 0.92f, animationSpec = tween(WindMotion.DurFast, easing = WindMotion.EasingStandard)),
+            exit = fadeOut(animationSpec = tween(WindMotion.DurFast, easing = WindMotion.EasingExit)) +
+                scaleOut(targetScale = 0.96f, animationSpec = tween(WindMotion.DurFast, easing = WindMotion.EasingExit)),
+            modifier = Modifier.align(Alignment.Center)
+        ) {
             Surface(
-                modifier = Modifier.align(Alignment.Center),
                 color = Color(0x99000000),
                 shape = WindRadius.Consent
             ) {
@@ -879,8 +933,8 @@ fun MobilePlayerScreen(
                         // Expandable buttons  Eslide in from the right
                         androidx.compose.animation.AnimatedVisibility(
                             visible = panelExpanded,
-                            enter = expandHorizontally(animationSpec = tween(250), expandFrom = Alignment.End) + fadeIn(),
-                            exit = shrinkHorizontally(animationSpec = tween(250), shrinkTowards = Alignment.End) + fadeOut()
+                            enter = expandHorizontally(animationSpec = tween(WindMotion.DurMedium, easing = WindMotion.EasingStandard), expandFrom = Alignment.End) + fadeIn(),
+                            exit = shrinkHorizontally(animationSpec = tween(WindMotion.DurMedium, easing = WindMotion.EasingExit), shrinkTowards = Alignment.End) + fadeOut()
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 IconButton(onClick = ::toggleSpeed) {
@@ -894,6 +948,22 @@ fun MobilePlayerScreen(
                                     osdText = I18n.get("screenshot")
                                 }) {
                                     PhosphorIcon(Phosphor.CAMERA, "Screenshot", tint = Color.White, size = 22.dp)
+                                }
+                                // AI Subtitle generation trigger.
+                                IconButton(onClick = {
+                                    if (dev.windplayer.translate.TranslateService.isRunning) {
+                                        osdText = "Task already running"
+                                    } else {
+                                        val dur = try { player.getPropertyDouble("duration") } catch (_: Exception) { 0.0 }
+                                        dev.windplayer.translate.TranslationStarter.showChoice(
+                                            context = context,
+                                            videoTitle = file.name,
+                                            sourceUrl = file.path,
+                                            duration = dur
+                                        )
+                                    }
+                                }) {
+                                    PhosphorIcon(Phosphor.GLOBE, I18n.get("generate_subtitles"), tint = Color.White, size = 22.dp)
                                 }
                             }
                         }
@@ -962,12 +1032,25 @@ fun MobilePlayerScreen(
             }
         }
 
-        if (!fileLoaded && errorMsg.isEmpty()) {
-            CircularProgressIndicator(Modifier.align(Alignment.Center), color = WindColors.LightSignalOrange)
+        // WindMotion: fade in/out the loading + error overlays so they don't
+        // snap on top of the player surface.
+        AnimatedVisibility(
+            visible = !fileLoaded && errorMsg.isEmpty(),
+            enter = fadeIn(animationSpec = tween(WindMotion.DurMedium, easing = WindMotion.EasingStandard)),
+            exit = fadeOut(animationSpec = tween(WindMotion.DurMedium, easing = WindMotion.EasingExit)),
+            modifier = Modifier.align(Alignment.Center)
+        ) {
+            CircularProgressIndicator(color = WindColors.LightSignalOrange)
         }
 
-        if (errorMsg.isNotEmpty()) {
-            Column(Modifier.align(Alignment.Center).padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        AnimatedVisibility(
+            visible = errorMsg.isNotEmpty(),
+            enter = fadeIn(animationSpec = tween(WindMotion.DurMedium, easing = WindMotion.EasingStandard)) +
+                scaleIn(initialScale = 0.96f, animationSpec = tween(WindMotion.DurMedium, easing = WindMotion.EasingStandard)),
+            exit = fadeOut(animationSpec = tween(WindMotion.DurMedium, easing = WindMotion.EasingExit)),
+            modifier = Modifier.align(Alignment.Center)
+        ) {
+            Column(Modifier.padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(I18n.get("playback_error"), color = WindColors.SignalOrange, fontSize = 16.sp)
                 Spacer(Modifier.height(8.dp))
                 Text(errorMsg, color = WindColors.MediaMuted, fontSize = 12.sp)
@@ -975,12 +1058,11 @@ fun MobilePlayerScreen(
                 Button(onClick = onBack) { Text(I18n.get("back")) }
             }
         }
-
         // Right-side playlist panel  Eslides in from right
         AnimatedVisibility(
             visible = showPlaylist,
-            enter = slideInHorizontally(animationSpec = tween(250), initialOffsetX = { it }) + fadeIn(),
-            exit = slideOutHorizontally(animationSpec = tween(250), targetOffsetX = { it }) + fadeOut(),
+            enter = slideInHorizontally(animationSpec = tween(WindMotion.DurMedium, easing = WindMotion.EasingStandard), initialOffsetX = { it }) + fadeIn(),
+            exit = slideOutHorizontally(animationSpec = tween(WindMotion.DurMedium, easing = WindMotion.EasingExit), targetOffsetX = { it }) + fadeOut(),
             modifier = Modifier.align(Alignment.CenterEnd)
         ) {
             Surface(
@@ -1081,7 +1163,7 @@ private fun TrackSelectionContent(
     }
 
     Column(Modifier.fillMaxWidth().padding(bottom = 32.dp)) {
-        TabRow(selectedTabIndex = tabIndex, containerColor = WindColors.MediaInk, contentColor = WindColors.LightSignalOrange) {
+        PrimaryTabRow(selectedTabIndex = tabIndex, containerColor = WindColors.MediaInk, contentColor = WindColors.LightSignalOrange) {
             tabs.forEachIndexed { i, title ->
                 Tab(selected = tabIndex == i, onClick = { tabIndex = i }, text = { Text(title, color = if (i == tabIndex) WindColors.LightSignalOrange else WindColors.MediaMuted) })
             }

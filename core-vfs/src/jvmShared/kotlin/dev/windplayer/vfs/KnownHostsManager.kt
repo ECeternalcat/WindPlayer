@@ -61,22 +61,6 @@ private fun File.ensureExists(): File {
 }
 
 /**
- * Best-effort chmod to owner-only (0600). Silently no-ops on non-POSIX FS
- * (Windows) where the JDK does not honor PosixFilePermissions.
- */
-private fun restrictFilePermissions(file: File) {
-    try {
-        val path = file.toPath()
-        val attrs = java.nio.file.Files.readAttributes(path, java.nio.file.attribute.PosixFileAttributes::class.java)
-        // Only attempt on POSIX FS; throws on Windows which we swallow.
-        java.nio.file.Files.setPosixFilePermissions(path, java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"))
-        @Suppress("UNUSED_VARIABLE") val unused = attrs
-    } catch (_: Exception) {
-        // Non-POSIX filesystem or unsupported — no-op.
-    }
-}
-
-/**
  * HostKeyVerifier that always rejects. Used as the fail-closed fallback when
  * the TOFU store cannot be opened — never [PromiscuousVerifier].
  *

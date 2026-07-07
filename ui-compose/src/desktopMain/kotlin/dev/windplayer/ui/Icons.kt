@@ -1,10 +1,8 @@
 package dev.windplayer.ui
 
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.painter.Painter
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.res.loadSvgPainter
+import androidx.compose.ui.res.painterResource
 
 /**
  * Phosphor icon names used by the desktop UI. Each name corresponds to a
@@ -44,16 +42,19 @@ object PhosphorIcons {
 }
 
 /**
- * Load a Phosphor SVG icon from `resources/icons/<name>.svg`. Cached per [name]
- * via [remember].
+ * Load a Phosphor SVG icon from `resources/icons/<name>.svg`.
+ *
+ * Replaces the long-deprecated `loadSvgPainter` from older Compose Multiplatform
+ * releases. CMP 1.11 also deprecates `painterResource(String)` in favour of the
+ * full Compose resources library (`composeResources/files/...` + generated `Res`
+ * accessors), but migrating the desktop-only icon set to that system requires
+ * restructuring the resources directory and adding `compose.components.resources`
+ * — a much larger change for a single warning. We suppress here until the
+ * project adopts Compose resources wholesale (which should also subsume the
+ * Sofia Sans font loading in WindTheme.kt).
  */
+@Suppress("DEPRECATION")
 @Composable
-fun iconPainter(name: String): Painter {
-    val density = LocalDensity.current
-    return remember(name) {
-        val stream = Thread.currentThread().contextClassLoader
-            .getResourceAsStream("icons/$name.svg")
-            ?: throw IllegalArgumentException("Icon not found: $name")
-        loadSvgPainter(stream, density)
-    }
-}
+fun iconPainter(name: String): Painter = painterResource("icons/$name.svg")
+
+

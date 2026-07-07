@@ -30,12 +30,18 @@ class StreamProxy {
     private val server = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
     val port: Int = server.localPort
     private val sessions = mutableMapOf<String, StreamSession>()
-    private val executor = Executors.newCachedThreadPool()
+    // CON-1: daemon threads so an Activity destroy that races `onDispose`
+    // doesn't leave zombie workers holding the process alive. Mirrors the
+    // desktop StreamProxy thread factory.
+    private val executor = Executors.newCachedThreadPool { r ->
+        Thread(r, "StreamProxy-worker").apply { isDaemon = true }
+    }
     @Volatile
     private var running = true
 
     init {
-        Thread({ acceptLoop() }, "StreamProxy-accept").start()
+        // CON-1: accept thread must be daemon too.
+        Thread({ acceptLoop() }, "StreamProxy-accept").apply { isDaemon = true }.start()
         LOG.info("HTTP proxy started on 127.0.0.1:$port")
     }
 
@@ -100,6 +106,18 @@ class StreamProxy {
                         headers[line.substring(0, idx).trim().lowercase()] =
                             line.substring(idx + 1).trim()
                     }
+                }
+
+                // SEC-6: reject cross-origin requests. The session UUID alone
+                // authenticates the request, but a DNS-rebinding attack or an
+                // embedded WebView could still issue a same-host request.
+                // Reject anything whose Host header isn't localhost / 127.0.0.1
+                // (or missing, which is what mpv sends).
+                val host = headers["host"]
+                if (host != null && host != "127.0.0.1:$port" && host != "localhost:$port" &&
+                    host != "127.0.0.1" && host != "localhost") {
+                    sendError(out, 403, "Forbidden")
+                    return
                 }
 
                 val id = path.removePrefix("/stream/")

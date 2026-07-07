@@ -1,5 +1,7 @@
 package dev.windplayer.ui
 
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
@@ -50,12 +52,22 @@ fun App(
         resumePosition: Double = 0.0
     ) {
         val fileName = filePath.substringAfterLast('/').substringAfterLast('\\')
+        // Infer the protocol from the server config when available so the
+        // FileNode's metadata is accurate (previously hardcoded SFTP for any
+        // non-local path). preparePlayback below ignores this field — it
+        // reads ServerConfig.protocol directly — but other call sites
+        // (history, track matching) consult node.protocol.
+        val proto = if (isLocal) {
+            VfsProtocol.LOCAL
+        } else {
+            serverId?.let { vfsManager.getServer(it)?.protocol } ?: VfsProtocol.SFTP
+        }
         val node = FileNode(
             name = fileName,
             path = filePath,
             isDirectory = false,
             size = 0,
-            protocol = if (isLocal) VfsProtocol.LOCAL else VfsProtocol.SFTP
+            protocol = proto
         )
         val newIndex = if (inheritedDirPaths.isNotEmpty()) {
             inheritedDirPaths.indexOf(filePath).takeIf { it >= 0 } ?: inheritedIndex
@@ -182,8 +194,17 @@ fun App(
         androidx.compose.runtime.CompositionLocalProvider(
             LocalTextStyle provides WindTypography.bodyLarge
         ) {
-        when (currentScreen) {
-            AppScreen.BROWSER -> {
+        // WindMotion: crossfade screen transitions. PlayerScreen is heavy
+        // (mpv-backed) but takes `player` as a parameter, so two simultaneous
+        // compositions during the ~250ms fade are safe — mpv calls are
+        // serialized by the player's internal lock.
+        Crossfade(
+            targetState = currentScreen,
+            animationSpec = tween(WindMotion.DurMedium, easing = WindMotion.EasingStandard),
+            label = "screen"
+        ) { screen ->
+            when (screen) {
+                AppScreen.BROWSER -> {
                 FileBrowserScreen(
                     vfsManager = vfsManager,
                     onPlayFile = { params ->
@@ -252,6 +273,7 @@ fun App(
                     modifier = modifier
                 )
             }
+        }
         }
         }
     }

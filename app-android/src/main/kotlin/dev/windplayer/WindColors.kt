@@ -22,7 +22,6 @@ object WindColors {
     var Ink by mutableStateOf(Color(0xFF141413))
     var Charcoal by mutableStateOf(Color(0xFF262627))
     var Slate by mutableStateOf(Color(0xFF696969))
-    var Granite by mutableStateOf(Color(0xFF555555))
     var DustTaupe by mutableStateOf(Color(0xFFD1CDC7))
     var Hairline by mutableStateOf(Color(0xFFE2DDD5))
 
@@ -67,7 +66,6 @@ object WindColors {
     val MediaSurface = Color(0xFF2A2826)
     val MediaCream = Color(0xFFF3F0EE)
     val MediaMuted = Color(0xFFD1CDC7)
-    val MediaAccent = Color(0xFFF37338)
 
     fun applyDark(dark: Boolean) {
         isDarkMode = dark
@@ -78,7 +76,6 @@ object WindColors {
             Ink = Color(0xFFF3F0EE)
             Charcoal = Color(0xFFD1CDC7)
             Slate = Color(0xFFA8A29A)
-            Granite = Color(0xFF8A857E)
             DustTaupe = Color(0xFF6E6A64)
             Hairline = Color(0xFF3A3735)
             SignalOrange = Color(0xFFE8511A)
@@ -94,7 +91,6 @@ object WindColors {
             Ink = Color(0xFF141413)
             Charcoal = Color(0xFF262627)
             Slate = Color(0xFF696969)
-            Granite = Color(0xFF555555)
             DustTaupe = Color(0xFFD1CDC7)
             Hairline = Color(0xFFE2DDD5)
             SignalOrange = Color(0xFFCF4500)

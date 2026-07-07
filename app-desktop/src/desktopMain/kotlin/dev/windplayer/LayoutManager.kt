@@ -111,6 +111,12 @@ internal class LayoutManager(
             if (isPip) exitPip()
         }
         applyLayout()
+        // Auto-hide controls 5s after entering the player (all modes, not just
+        // fullscreen/PiP). Previously the timer was only started in
+        // fullscreen/PiP enter paths, so windowed playback kept the bar forever.
+        if (screen == AppScreen.PLAYER) {
+            resetHideTimer()
+        }
     }
 
     fun setTracksExpanded(expanded: Boolean) = onEdt {
@@ -118,6 +124,9 @@ internal class LayoutManager(
         if (expanded) {
             controlsVisible = true
             hideTimer?.stop()
+        } else {
+            // Tracks collapsed: restart auto-hide so controls go away after 5s.
+            resetHideTimer()
         }
         applyLayout()
     }
@@ -265,8 +274,15 @@ internal class LayoutManager(
     // ------------------------------------------------------------------
 
     fun onMouseActivity() = onEdt {
-        if (currentScreen != AppScreen.PLAYER || (!isFullscreen && !isPip)) return@onEdt
-        videoCanvas.cursor = Cursor.getDefaultCursor()
+        // Works in ALL player modes (windowed + fullscreen + PiP). Previously
+        // bailed out of windowed mode, which meant moving the mouse could never
+        // show the controls once they auto-hid.
+        if (currentScreen != AppScreen.PLAYER) return@onEdt
+        // Only hide cursor in fullscreen/PiP; in windowed mode the user needs
+        // the cursor to reach the title bar / window controls.
+        if (isFullscreen || isPip) {
+            videoCanvas.cursor = Cursor.getDefaultCursor()
+        }
         if (!tracksExpanded && !controlsVisible) {
             controlsVisible = true
             applyLayout()
@@ -279,17 +295,24 @@ internal class LayoutManager(
     }
 
     fun restartHideTimer() = onEdt {
-        if ((isFullscreen || isPip) && currentScreen == AppScreen.PLAYER) {
+        if (currentScreen == AppScreen.PLAYER) {
             resetHideTimer()
         }
     }
 
     private fun resetHideTimer() {
         hideTimer?.stop()
-        hideTimer = Timer(3000) {
-            if (!tracksExpanded && currentScreen == AppScreen.PLAYER && (isFullscreen || isPip)) {
+        hideTimer = Timer(5000) {
+            // Auto-hide in ALL player modes (was fullscreen/PiP only). The
+            // 5s delay gives the user time to grab a control before it
+            // disappears; moving the mouse brings everything back.
+            if (!tracksExpanded && currentScreen == AppScreen.PLAYER) {
                 controlsVisible = false
-                videoCanvas.cursor = hiddenCursor
+                // Only hide cursor in fullscreen/PiP; windowed mode keeps the
+                // cursor visible so the user can still reach the title bar.
+                if (isFullscreen || isPip) {
+                    videoCanvas.cursor = hiddenCursor
+                }
                 applyLayout()
             }
         }
@@ -301,13 +324,38 @@ internal class LayoutManager(
     // Click vs double-click detection
     // ------------------------------------------------------------------
 
+    /**
+     * Single-click on the video canvas.
+     *
+     * Behavior (user request 2026-06-30):
+     *  - **Controls visible** → hide the controls. Does NOT toggle pause.
+     *    The user must click again (with controls hidden) to toggle.
+     *  - **Controls hidden** → toggle play/pause as before.
+     *
+     * Either way, a quick second click is intercepted by
+     * [handleCanvasDoubleClick] which cancels this timer and toggles fullscreen.
+     */
     fun handleCanvasClick(player: MpvPlayer, osd: MutableSharedFlow<String>) = onEdt {
         if (currentScreen != AppScreen.PLAYER) return@onEdt
         singleClickTimer?.stop()
         singleClickTimer = Timer(250) {
-            player.command("cycle", "pause")
-            val paused = player.getPropertyString("pause") == "yes"
-            osd.tryEmit(if (paused) "|| ${dev.windplayer.ui.I18n.get("osd_paused")}" else "> ${dev.windplayer.ui.I18n.get("osd_playing")}")
+            if (controlsVisible) {
+                // First click with visible controls: hide them (don't pause).
+                controlsVisible = false
+                if (isFullscreen || isPip) {
+                    videoCanvas.cursor = hiddenCursor
+                }
+                hideTimer?.stop()
+                applyLayout()
+            } else {
+                // Click with hidden controls: toggle play/pause.
+                player.command("cycle", "pause")
+                val paused = player.getPropertyString("pause") == "yes"
+                osd.tryEmit(if (paused) "|| ${dev.windplayer.ui.I18n.get("osd_paused")}" else "> ${dev.windplayer.ui.I18n.get("osd_playing")}")
+                // User is active — restart the auto-hide timer so controls
+                // (if they reappear via mouse move) hide again in 5s.
+                resetHideTimer()
+            }
         }
         singleClickTimer?.isRepeats = false
         singleClickTimer?.start()
@@ -341,7 +389,10 @@ internal class LayoutManager(
                 AppScreen.PLAYER -> {
                     val baseControlH = if (isPip) 80 else 120
                     val controlH = if (tracksExpanded) (h - 40) else baseControlH
-                    if ((isFullscreen || isPip) && !controlsVisible) {
+                    // Controls hide in ALL modes (was fullscreen/PiP only).
+                    // When hidden, the compose panel is moved off-screen so
+                    // the video canvas fills the entire window.
+                    if (!controlsVisible) {
                         videoCanvas.setBounds(0, 0, w, h)
                         composePanel.setBounds(0, h, w, 0)
                     } else {

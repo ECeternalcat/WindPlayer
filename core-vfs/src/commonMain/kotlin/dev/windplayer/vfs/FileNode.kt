@@ -34,14 +34,16 @@ fun FileNode.isSubtitle(): Boolean {
     return ext in SUBTITLE_EXTENSIONS
 }
 
-fun FileNode.videoBaseName(): String {
-    return name.substringBeforeLast('.')
-}
-
-fun findSidecarSubtitles(videoNode: FileNode, allFiles: List<FileNode>): List<FileNode> {
-    val baseName = videoNode.videoBaseName()
-    return allFiles.filter { file ->
-        !file.isDirectory && file.isSubtitle() &&
-            file.name.lowercase().startsWith("$baseName.".lowercase())
-    }
-}
+/**
+ * Default [FileNode] ordering used by every VFS client and SAF listing.
+ *
+ * Directories first (descending `isDirectory`), then alphabetical by lowercased name.
+ *
+ * ARCH-3: lives in `commonMain` (pure Kotlin, no JVM dependency) so commonTest
+ * can reference it without leaking the jvmShared source set. The previous
+ * placement in `jvmShared/VfsUtils.kt` worked only because both declared
+ * targets (desktop, android) inherit jvmShared; a non-JVM target (iOS/JS)
+ * would break the commonTest compilation.
+ */
+val FileNodeComparator: Comparator<FileNode> =
+    compareByDescending<FileNode> { it.isDirectory }.thenBy { it.name.lowercase() }

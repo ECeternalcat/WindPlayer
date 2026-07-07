@@ -3,12 +3,14 @@ package dev.windplayer
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import android.widget.Toast
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -65,6 +67,7 @@ fun FileBrowserScreen(
     var showAddFolderDialog by remember { mutableStateOf(false) }
     var newFolderName by remember { mutableStateOf("") }
     var showAddChooser by remember { mutableStateOf(false) }
+    var showTaskList by remember { mutableStateOf(false) }
     var pendingFolderName by remember { mutableStateOf<String?>(null) }
 
     // Root of the currently-browsed local tree; set when a saved local folder
@@ -124,6 +127,28 @@ fun FileBrowserScreen(
                     }
                 },
                 actions = {
+                    // Translation task indicator — shows when any task exists.
+                    // Pulses when a task is running. Opens the task list sheet.
+                    val tasks by dev.windplayer.translate.TaskStore.tasks.collectAsState()
+                    if (tasks.isNotEmpty()) {
+                        val anyActive = tasks.any { it.isActive }
+                        IconButton(onClick = { showTaskList = true }) {
+                            if (anyActive) {
+                                // Pulse for running tasks.
+                                val pulse = rememberInfiniteTransition(label = "taskPulse")
+                                val alpha by pulse.animateFloat(
+                                    initialValue = 0.4f, targetValue = 1f,
+                                    animationSpec = infiniteRepeatable(tween(800), RepeatMode.Reverse),
+                                    label = "taskAlpha"
+                                )
+                                PhosphorIcon(Phosphor.MICROPHONE, "Tasks",
+                                    tint = WindColors.SignalOrange.copy(alpha = alpha), size = 22.dp)
+                            } else {
+                                PhosphorIcon(Phosphor.MICROPHONE, "Tasks",
+                                    tint = WindColors.Slate, size = 22.dp)
+                            }
+                        }
+                    }
                     // Paste button — visible when a file is on the clipboard
                     if (clipboardFile != null) {
                         IconButton(onClick = {
@@ -333,6 +358,17 @@ fun FileBrowserScreen(
                     clipboardIsCut = true
                     contextMenuFile = null
                 }
+                if (file.isVideo()) {
+                    SheetItem(Phosphor.MICROPHONE, I18n.get("generate_subtitles"), WindColors.Ink) {
+                        contextMenuFile = null
+                        dev.windplayer.translate.TranslationStarter.showChoice(
+                            context = context,
+                            videoTitle = file.name,
+                            sourceUrl = file.path,
+                            duration = 0.0
+                        )
+                    }
+                }
                 SheetItem(Phosphor.TRASH, I18n.get("delete"), WindColors.SignalOrange) {
                     contextMenuFile = null
                     // C6: listFiles + delete can block on slow providers.
@@ -477,6 +513,11 @@ fun FileBrowserScreen(
                 TextButton(onClick = { showAddFolderDialog = false }) { Text(I18n.get("cancel"), color = WindColors.Slate) }
             }
         )
+    }
+
+    // Translation task list sheet.
+    if (showTaskList) {
+        dev.windplayer.translate.TaskListSheet(onDismiss = { showTaskList = false })
     }
 }
 

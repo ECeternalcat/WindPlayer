@@ -1,6 +1,7 @@
 package dev.windplayer
 
 import androidx.activity.compose.BackHandler
+import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -10,6 +11,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -18,6 +20,8 @@ import dev.windplayer.vfs.FileNode
 import dev.windplayer.ui.I18n
 import dev.windplayer.vfs.ServerConfig
 import dev.windplayer.vfs.isVideo
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -33,6 +37,8 @@ fun ServerBrowseScreen(
     onRenameFile: (FileNode, String) -> Unit = { _, _ -> },
     onMoveFile: (FileNode, String) -> Unit = { _, _ -> }
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var showAllFiles by remember { mutableStateOf(false) }
     var contextMenuFile by remember { mutableStateOf<FileNode?>(null) }
     var renameTarget by remember { mutableStateOf<FileNode?>(null) }
@@ -144,6 +150,27 @@ fun ServerBrowseScreen(
                 SheetItem(Phosphor.FOLDER_SIMPLE, I18n.get("move_here"), WindColors.Ink) {
                     onMoveFile(file, currentPath)
                     contextMenuFile = null
+                }
+                if (file.isVideo()) {
+                    SheetItem(Phosphor.MICROPHONE, I18n.get("generate_subtitles"), WindColors.Ink) {
+                        contextMenuFile = null
+                        if (dev.windplayer.translate.TranslateService.isRunning) {
+                            Toast.makeText(context, "A task is already running", Toast.LENGTH_SHORT).show()
+                        } else {
+                            scope.launch {
+                                val url = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                    try { MobileVfsManager.resolveUrl(server, file.path) }
+                                    catch (_: Exception) { file.path }
+                                }
+                                dev.windplayer.translate.TranslationStarter.showChoice(
+                                    context = context,
+                                    videoTitle = file.name,
+                                    sourceUrl = url,
+                                    duration = 0.0
+                                )
+                            }
+                        }
+                    }
                 }
                 SheetItem(Phosphor.TRASH, I18n.get("delete"), WindColors.SignalOrange) {
                     onDeleteFile(file)

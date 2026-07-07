@@ -1,5 +1,7 @@
 package dev.windplayer.ui
 
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
@@ -41,7 +43,14 @@ fun AddServerDialog(
         textContentColor = WindColors.Slate,
         title = { Text(text = if (initialConfig != null) I18n.get("edit_server") else I18n.get("add_server")) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            // WindMotion: animate size changes when TLS toggle / warnings
+            // expand or collapse the dialog content.
+            Column(
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.animateContentSize(
+                    animationSpec = tween(WindMotion.DurMedium, easing = WindMotion.EasingStandard)
+                )
+            ) {
                 DialogTextField(
                     value = name,
                     onValueChange = { name = it },

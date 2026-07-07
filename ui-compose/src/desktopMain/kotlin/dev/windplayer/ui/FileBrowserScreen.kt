@@ -1,5 +1,7 @@
 package dev.windplayer.ui
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -166,6 +168,7 @@ fun FileBrowserScreen(
                     ServerRow(
                         server = server,
                         active = isActive,
+                        modifier = Modifier.animateItem(),
                         onClick = {
                             scope.launch {
                                 if (!vfsManager.isServerConnected(server.id)) {
@@ -173,7 +176,7 @@ fun FileBrowserScreen(
                                     errorText = ""
                                     val result = vfsManager.connectServer(server.id)
                                     if (result.isFailure) {
-                                        errorText = "Connection failed: ${result.exceptionOrNull()?.message}"
+                                        errorText = "${I18n.get("connection_failed_prefix")}: ${result.exceptionOrNull()?.message}"
                                         isLoading = false
                                         return@launch
                                     }
@@ -188,7 +191,7 @@ fun FileBrowserScreen(
                                 if (listResult.isSuccess) {
                                     files = listResult.getOrDefault(emptyList())
                                 } else {
-                                    errorText = listResult.exceptionOrNull()?.message ?: "Unknown error"
+                                    errorText = listResult.exceptionOrNull()?.message ?: I18n.get("unknown_error")
                                 }
                             }
                         },
@@ -255,7 +258,7 @@ fun FileBrowserScreen(
                     }, modifier = Modifier.size(40.dp)) {
                         Icon(
                             painter = iconPainter(PhosphorIcons.ARROW_LEFT),
-                            contentDescription = "Back",
+                            contentDescription = I18n.get("back"),
                             tint = WindColors.Ink,
                             modifier = Modifier.size(20.dp)
                         )
@@ -312,7 +315,7 @@ fun FileBrowserScreen(
                     ) {
                         Icon(
                             painter = iconPainter(PhosphorIcons.STAR),
-                            contentDescription = "Bookmark",
+                            contentDescription = I18n.get("bookmark"),
                             tint = if (isBookmarked) WindColors.LightSignalOrange else WindColors.Slate,
                             modifier = Modifier.size(20.dp)
                         )
@@ -341,7 +344,7 @@ fun FileBrowserScreen(
                             IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(24.dp)) {
                                 Icon(
                                     painter = iconPainter(PhosphorIcons.X),
-                                    contentDescription = "Clear",
+                                    contentDescription = I18n.get("clear"),
                                     tint = WindColors.Slate,
                                     modifier = Modifier.size(14.dp)
                                 )
@@ -496,6 +499,7 @@ fun FileBrowserScreen(
                     items(displayFiles, key = { it.path }) { file ->
                         FileRow(
                             file = file,
+                            modifier = Modifier.animateItem(),
                             onClick = {
                                 if (file.isDirectory) {
                                     scope.launch {
@@ -545,7 +549,7 @@ fun FileBrowserScreen(
                                     if (result.isSuccess) {
                                         onPlayFile(result.getOrNull()!!)
                                     } else {
-                                        errorText = result.exceptionOrNull()?.message ?: "Unknown error"
+                                        errorText = result.exceptionOrNull()?.message ?: I18n.get("unknown_error")
                                     }
                                 }
                             },
@@ -582,7 +586,7 @@ fun FileBrowserScreen(
                         if (ok) {
                             files = files.filterNot { it.path == target.path }
                         } else {
-                            errorText = "Failed to delete file"
+                            errorText = I18n.get("delete_failed")
                         }
                     }
                 }) { Text(I18n.get("delete"), color = WindColors.SignalOrange) }
@@ -650,7 +654,7 @@ fun FileBrowserScreen(
                                     vfsManager.listServerDirectory(sid2, currentPath).getOrDefault(emptyList())
                                 }
                             } else {
-                                errorText = "Failed to rename file"
+                                errorText = I18n.get("rename_failed")
                             }
                         }
                         }
@@ -714,9 +718,25 @@ private fun NavItem(
     subtle: Boolean = false,
     onClick: () -> Unit
 ) {
+    // WindMotion: animate nav item selection (bg + tint).
+    val bg by animateColorAsState(
+        targetValue = if (active) WindColors.Ink else Color.Transparent,
+        animationSpec = tween(WindMotion.DurFast, easing = WindMotion.EasingStandard),
+        label = "navBg"
+    )
+    val iconTint by animateColorAsState(
+        targetValue = if (active) WindColors.CanvasCream else WindColors.Slate,
+        animationSpec = tween(WindMotion.DurFast, easing = WindMotion.EasingStandard),
+        label = "navIconTint"
+    )
+    val textTint by animateColorAsState(
+        targetValue = if (active) WindColors.CanvasCream else if (subtle) WindColors.Slate else WindColors.Ink,
+        animationSpec = tween(WindMotion.DurFast, easing = WindMotion.EasingStandard),
+        label = "navTextTint"
+    )
     Surface(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
-        color = if (active) WindColors.Ink else Color.Transparent,
+        color = bg,
         shape = WindRadius.Pill
     ) {
         Row(
@@ -726,13 +746,13 @@ private fun NavItem(
             Icon(
                 painter = iconPainter(icon),
                 contentDescription = label,
-                tint = if (active) WindColors.CanvasCream else WindColors.Slate,
+                tint = iconTint,
                 modifier = Modifier.size(16.dp)
             )
             Spacer(modifier = Modifier.width(10.dp))
             Text(
                 text = label,
-                color = if (active) WindColors.CanvasCream else if (subtle) WindColors.Slate else WindColors.Ink,
+                color = textTint,
                 fontSize = 13.sp,
                 fontWeight = if (active) FontWeight.Medium else FontWeight.Normal
             )
@@ -777,7 +797,7 @@ private fun BookmarkRow(
                 ) {
                     Icon(
                         painter = iconPainter(PhosphorIcons.X),
-                        contentDescription = "Remove",
+                        contentDescription = I18n.get("remove"),
                         tint = WindColors.DustTaupe,
                         modifier = Modifier.size(12.dp)
                     )
@@ -831,10 +851,11 @@ private fun ServerRow(
     server: ServerConfig,
     active: Boolean,
     onClick: () -> Unit,
-    onDisconnect: (() -> Unit)?
+    onDisconnect: (() -> Unit)?,
+    modifier: Modifier = Modifier
 ) {
     Surface(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        modifier = modifier.fillMaxWidth().clickable(onClick = onClick),
         color = if (active) WindColors.Ink else Color.Transparent,
         shape = WindRadius.Pill
     ) {
@@ -884,7 +905,7 @@ private fun ServerRow(
                 ) {
                     Icon(
                         painter = iconPainter(PhosphorIcons.X),
-                        contentDescription = "Disconnect",
+                        contentDescription = I18n.get("disconnect"),
                         tint = WindColors.CanvasCream.copy(alpha = 0.7f),
                         modifier = Modifier.size(14.dp)
                     )
@@ -962,7 +983,8 @@ private fun FileRow(
     onPlay: () -> Unit,
     showActions: Boolean = false,
     onDelete: (() -> Unit)? = null,
-    onRename: (() -> Unit)? = null
+    onRename: (() -> Unit)? = null,
+    modifier: Modifier = Modifier
 ) {
     val isVideo = file.isVideo()
     val iconName = when {
@@ -978,9 +1000,9 @@ private fun FileRow(
         else -> WindColors.DustTaupe
     }
     var showMenu by remember { mutableStateOf(false) }
-
     Surface(
-        modifier = Modifier.fillMaxWidth().clickable { onClick() },
+
+        modifier = modifier.fillMaxWidth().clickable { onClick() },
         color = Color.Transparent,
         shape = WindRadius.Chip
     ) {
@@ -1023,7 +1045,7 @@ private fun FileRow(
                 ) {
                     Icon(
                         painter = iconPainter(PhosphorIcons.PLAY),
-                        contentDescription = "Play",
+                        contentDescription = I18n.get("play"),
                         tint = WindColors.CanvasCream,
                         modifier = Modifier.size(16.dp)
                     )
@@ -1037,7 +1059,7 @@ private fun FileRow(
                     ) {
                         Icon(
                             painter = iconPainter(PhosphorIcons.DOTS_THREE),
-                            contentDescription = "More",
+                            contentDescription = I18n.get("more"),
                             tint = WindColors.Slate,
                             modifier = Modifier.size(18.dp)
                         )

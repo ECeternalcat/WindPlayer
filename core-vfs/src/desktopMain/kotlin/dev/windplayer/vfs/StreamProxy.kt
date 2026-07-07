@@ -49,6 +49,18 @@ class StreamProxy {
     }
 
     private fun handleRequest(exchange: HttpExchange) {
+        // SEC-6: reject cross-origin requests. The session UUID authenticates
+        // the request, but a DNS-rebinding attack or embedded browser could
+        // still issue a same-host request. mpv omits the Host header entirely
+        // (or sends 127.0.0.1:$port), so we only reject clearly foreign hosts.
+        val hostHeader = exchange.requestHeaders.getFirst("Host")
+        if (hostHeader != null && hostHeader != "127.0.0.1:$port" && hostHeader != "localhost:$port" &&
+            hostHeader != "127.0.0.1" && hostHeader != "localhost") {
+            exchange.sendResponseHeaders(403, -1)
+            exchange.close()
+            return
+        }
+
         val id = exchange.requestURI.path.removePrefix("/stream/")
         val session: StreamSession?
         synchronized(this) { session = sessions[id] }

@@ -80,7 +80,7 @@ class SftpClient : VfsClient {
                     path = if (path.endsWith("/")) "$path${info.name}" else "$path/${info.name}",
                     isDirectory = info.isDirectory,
                     size = if (info.isDirectory) 0 else info.attributes.size,
-                    lastModified = info.attributes.mtime.toLong() * 1000L,
+                    lastModified = info.attributes.mtime * 1000L,
                     protocol = VfsProtocol.SFTP
                 )
             }.filter { it.name != "." && it.name != ".." }

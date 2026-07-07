@@ -1,11 +1,14 @@
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
-    alias(libs.plugins.android.library)
+    id("com.android.kotlin.multiplatform.library")
 }
-
 kotlin {
     jvm("desktop")
-    androidTarget()
+    android {
+        namespace = "dev.windplayer.core.vfs"
+        compileSdk = 36
+        minSdk = 24
+    }
 
     sourceSets {
         val commonMain by getting {
@@ -50,13 +53,5 @@ kotlin {
         val androidMain by getting {
             dependsOn(jvmShared)
         }
-    }
-}
-
-android {
-    namespace = "dev.windplayer.core.vfs"
-    compileSdk = 36
-    defaultConfig {
-        minSdk = 24
     }
 }

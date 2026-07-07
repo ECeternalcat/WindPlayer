@@ -1,6 +1,6 @@
 [versions]
 kotlin = "2.3.10"
-compose-multiplatform = "1.9.0"
+compose-multiplatform = "1.11.1"
 jna = "5.17.0"
 coroutines = "1.10.2"
 ktor = "3.0.3"
@@ -34,3 +34,7 @@ compose-multiplatform = { id = "org.jetbrains.compose", version.ref = "compose-m
 compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 android-application = { id = "com.android.application", version.ref = "agp" }
 android-library = { id = "com.android.library", version.ref = "agp" }
+# Note: com.android.kotlin.multiplatform.library (new AGP 9.x KMP plugin) is
+# applied via id("...") in :core-mpv / :core-vfs build.gradle.kts, NOT via a
+# version catalog alias. The plugin resolves through the AGP classpath, so a
+# versioned alias triggers "already on classpath with unknown version" errors.

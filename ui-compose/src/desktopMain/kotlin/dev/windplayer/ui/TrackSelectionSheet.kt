@@ -113,14 +113,14 @@ fun TrackSelectionSheet(
                 IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
                     Icon(
                         painter = iconPainter(PhosphorIcons.X),
-                        contentDescription = "Close",
+                        contentDescription = I18n.get("close"),
                         tint = WindColors.LightSignalOrange,
                         modifier = Modifier.size(18.dp)
                     )
                 }
             }
 
-            TabRow(
+            PrimaryTabRow(
                 selectedTabIndex = selectedTab,
                 containerColor = WindColors.MediaSurface,
                 contentColor = WindColors.MediaCream
@@ -222,7 +222,7 @@ fun TrackSelectionSheet(
                 }, modifier = Modifier.size(28.dp)) {
                     Icon(
                         painter = iconPainter(PhosphorIcons.ARROW_LEFT),
-                        contentDescription = "Back",
+                        contentDescription = I18n.get("back"),
                         tint = WindColors.LightSignalOrange,
                         modifier = Modifier.size(18.dp)
                     )

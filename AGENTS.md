@@ -16,6 +16,30 @@ test/          Test video files
 Documents/     Project planning + worklog + issues
 ```
 
+### Source-set hierarchy (KMP)
+
+Each KMP module (`core-mpv`, `core-vfs`, `ui-compose`) defines `desktop` + `android`
+targets. `core-vfs` additionally defines an intermediate **`jvmShared`** source set
+that holds JVM-only code shared between desktop and Android (SFTP/WebDAV/FTP
+clients + `VfsUtils` + `KnownHostsManager` + `SshjCompat` + `FilePermissions`).
+Hierarchy:
+
+```
+core-vfs:
+  commonMain (target-agnostic: FileNode, ServerConfig, TrackMatcher, VfsClient,
+              FileNodeComparator — pure Kotlin)
+    └── jvmShared (JVM-only: SftpClient, WebdavClient, FtpClient, VfsUtils,
+                   KnownHostsManager, SshjCompat, FilePermissions)
+            ├── desktopMain (LocalClient, StreamProxy, VfsManager, CryptoUtil)
+            └── androidMain  (StreamProxy — Android uses raw ServerSocket
+                              because com.sun.net.httpserver isn't in the SDK)
+```
+
+This split exists so a future non-JVM target (iOS / JS) can compile against
+`commonMain` without dragging in `java.*` / `net.schmizz.*` / `io.ktor.*`.
+Tests in `commonTest` MUST only reference `commonMain` symbols (not jvmShared);
+use `desktopTest` for jvmShared tests.
+
 ## Build / Test commands
 
 All commands run from the repo root via `./gradlew` (or `.\gradlew.bat` on Windows).
@@ -61,8 +85,10 @@ run the test command above instead.
 Two GitHub Actions workflows exist:
 
 - `.github/workflows/ci.yml` — runs on every push to master/main and on PRs.
-  Compiles Desktop + Android, runs `:core-vfs:desktopTest`, uploads the debug APK
-  and test results as artifacts. Runs on `ubuntu-latest`.
+  Compiles Desktop + Android, runs `:core-vfs:allTests` (88 tests across
+  TrackMatcher / ServerConfig / VfsUtils / CryptoUtil), uploads the debug APK
+  and test results as artifacts. Runs on `ubuntu-latest`. Declares
+  `permissions: { contents: read }` (least-privilege).
 
 - `.github/workflows/release.yml` — runs on `v*` tag push.
   Builds the Android APK and Desktop distribution ZIP, attaches them to a

@@ -50,6 +50,26 @@ class ServerConfigTest {
         assertEquals("dav.example.com", config.bareHost)
     }
 
+    @Test
+    fun `SEC-8 bareHost strips userpass userinfo`() {
+        // A user pastes a full URL into the host field. We must not store the
+        // password under the unencrypted `host` key.
+        val config = ServerConfig(
+            id = "1", name = "test", protocol = VfsProtocol.WEBDAV,
+            host = "https://alice:s3cr3t@dav.example.com", port = 443
+        )
+        assertEquals("dav.example.com", config.bareHost)
+    }
+
+    @Test
+    fun `SEC-8 bareHost strips bare-user userinfo`() {
+        val config = ServerConfig(
+            id = "1", name = "test", protocol = VfsProtocol.SFTP,
+            host = "alice@ssh.example.com", port = 22
+        )
+        assertEquals("ssh.example.com", config.bareHost)
+    }
+
     // ------------------------------------------------------------------
     // httpScheme()
     // ------------------------------------------------------------------
@@ -73,14 +93,32 @@ class ServerConfigTest {
     }
 
     @Test
-    fun `httpScheme falls back to http when no prefix and port 0`() {
-        // No scheme prefix, port 0 (unset) → default to http (safe default).
+    fun `SEC-2 httpScheme defaults to https for unknown ports`() {
+        // SEC-2: bare hostname + non-standard port now defaults to https,
+        // not http. Users wanting cleartext must type http:// explicitly.
+        val config = ServerConfig(
+            id = "1", name = "test", protocol = VfsProtocol.WEBDAV,
+            host = "dav.example.com", port = 8080
+        )
+        assertEquals("https", config.httpScheme())
+    }
+
+    @Test
+    fun `SEC-2 httpScheme defaults to https when port is 0`() {
         val config = ServerConfig(
             id = "1", name = "test", protocol = VfsProtocol.WEBDAV,
             host = "dav.example.com", port = 0
         )
+        assertEquals("https", config.httpScheme())
+    }
+
+    @Test
+    fun `SEC-2 httpScheme returns http for explicit port 80`() {
+        val config = ServerConfig(
+            id = "1", name = "test", protocol = VfsProtocol.WEBDAV,
+            host = "dav.example.com", port = 80
+        )
         assertEquals("http", config.httpScheme())
-        assertEquals(80, config.defaultPort())
     }
 
     @Test
@@ -90,15 +128,6 @@ class ServerConfigTest {
             host = "dav.example.com", port = 443
         )
         assertEquals("https", config.httpScheme())
-    }
-
-    @Test
-    fun `httpScheme falls back to http for non-443 port`() {
-        val config = ServerConfig(
-            id = "1", name = "test", protocol = VfsProtocol.WEBDAV,
-            host = "dav.example.com", port = 8080
-        )
-        assertEquals("http", config.httpScheme())
     }
 
     // ------------------------------------------------------------------
@@ -136,8 +165,17 @@ class ServerConfigTest {
     }
 
     @Test
-    fun `defaultPort WebDAV plain http returns 80`() {
+    fun `SEC-2 defaultPort WebDAV bare host returns 443 not 80`() {
+        // SEC-2: httpScheme now defaults to https for unknown config, so an
+        // unspecified WebDAV server connects on 443 instead of 80. Users who
+        // want port 80 must specify it explicitly.
         val config = ServerConfig("1", "t", VfsProtocol.WEBDAV, "host", port = 0)
+        assertEquals(443, config.defaultPort())
+    }
+
+    @Test
+    fun `SEC-2 defaultPort WebDAV explicit http prefix returns 80`() {
+        val config = ServerConfig("1", "t", VfsProtocol.WEBDAV, "http://host", port = 0)
         assertEquals(80, config.defaultPort())
     }
 
@@ -181,5 +219,41 @@ class ServerConfigTest {
         assertEquals(0.0, params.resumePosition)
         assertEquals(false, params.isLocal)
         assertEquals(null, params.serverId)
+    }
+
+    // ------------------------------------------------------------------
+    // ARCH-15: precedence + boundary tests
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `SEC-2 httpScheme host prefix wins over port 443`() {
+        // If the user explicitly types http://, even with port 443, honor the
+        // explicit scheme (don't silently upgrade to https).
+        val config = ServerConfig("1", "t", VfsProtocol.WEBDAV, "http://dav.example.com", port = 443)
+        assertEquals("http", config.httpScheme())
+    }
+
+    @Test
+    fun `SEC-2 httpScheme https prefix wins over port 80`() {
+        // Symmetric: explicit https:// with port 80 stays https.
+        val config = ServerConfig("1", "t", VfsProtocol.WEBDAV, "https://dav.example.com", port = 80)
+        assertEquals("https", config.httpScheme())
+    }
+
+    @Test
+    fun `defaultPort LOCAL is always 0 regardless of port`() {
+        // ARCH-15: unknown protocol branch — LOCAL always returns 0 even if
+        // the user accidentally set a port.
+        val config = ServerConfig("1", "t", VfsProtocol.LOCAL, "host", port = 9999)
+        assertEquals(0, config.defaultPort())
+    }
+
+    @Test
+    fun `SEC-8 bareHost with userinfo and custom port`() {
+        val config = ServerConfig(
+            id = "1", name = "test", protocol = VfsProtocol.WEBDAV,
+            host = "https://alice:secret@dav.example.com:8443", port = 8443
+        )
+        assertEquals("dav.example.com", config.bareHost)
     }
 }

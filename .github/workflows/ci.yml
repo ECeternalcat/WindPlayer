@@ -18,6 +18,12 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# ARCH-14: least-privilege — CI only reads code and uploads artifacts; it does
+# NOT need to push commits, tags, or releases. Without this block CI inherits
+# the repo-default GITHUB_TOKEN permissions, which may include contents:write.
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build & Test (Linux)

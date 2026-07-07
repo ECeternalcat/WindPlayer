@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SEC-4 / A-2026-M15: Network security configuration.
+
+  Default: NO cleartext traffic (Android's secure default). This prevents
+  accidental http:// remote URLs from leaking credentials, matching the
+  SEC-2 hardening on the desktop WebDAV client.
+
+  Whitelist:
+    - 127.0.0.1, localhost: required by the in-process StreamProxy that
+      bridges SFTP reads to mpv over http://127.0.0.1:<random-port>/stream/<id>.
+      Without this exception mpv's GET would be blocked and SFTP playback
+      would fail with "Cleartext HTTP traffic to 127.0.0.1 not permitted".
+
+  Note: users who explicitly want cleartext to a remote host (e.g. an FTP
+  server with useTls=false, or a WebDAV server typed as http://...) still
+  can — the FTP path uses our own socket, not Android's network policy, and
+  WebDAV cleartext is the user's explicit opt-in. This config only affects
+  the platform-level cleartext gate.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>

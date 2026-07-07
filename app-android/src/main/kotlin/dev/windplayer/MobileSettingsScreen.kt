@@ -1,6 +1,7 @@
 package dev.windplayer
 
 import androidx.compose.animation.*
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -20,9 +21,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.app.NotificationCompat
 import dev.windplayer.ui.I18n
+import dev.windplayer.ui.WindMotion
 import dev.windplayer.ui.PlayerSettings
 import dev.windplayer.ui.ThemeMode
+import dev.windplayer.translate.TranslationConfig
+import dev.windplayer.translate.TranslationConfigHelper
+import dev.windplayer.translate.WhisperModelWhiteList
+import dev.windplayer.translate.ModelFetcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private enum class SettingsPage(val titleKey: String, val glyph: Char) {
     PLAYBACK("cat_playback", Phosphor.PLAY),
@@ -33,6 +43,7 @@ private enum class SettingsPage(val titleKey: String, val glyph: Char) {
     SCREENSHOT("cat_screenshot", Phosphor.GAUGE),
     APPEARANCE("appearance", Phosphor.CORNERS_OUT),
     LANGUAGE("language", Phosphor.FILE),
+    AI_TRANSLATE("cat_ai_translate", Phosphor.GLOBE),
     ADVANCED("cat_advanced", Phosphor.GEAR),
     ABOUT("about", Phosphor.STAR);
 }
@@ -74,16 +85,24 @@ fun MobileSettingsScreen(
         AnimatedContent(
             targetState = page,
             transitionSpec = {
+                // WindMotion: align to standard easing. Slide distance is 1/3
+                // width (subtle — full-width slides feel heavy on mobile).
+                val enterEasing = WindMotion.EasingStandard
+                val exitEasing = WindMotion.EasingExit
                 if (initialState == null) {
                     // Forward (list → category): new page enters from right,
                     // old list exits to left
-                    (slideInHorizontally { it / 3 } + fadeIn()) togetherWith
-                    (slideOutHorizontally { -it / 3 } + fadeOut())
+                    (slideInHorizontally(animationSpec = tween(WindMotion.DurMedium, easing = enterEasing)) { it / 3 } +
+                        fadeIn(animationSpec = tween(WindMotion.DurMedium, easing = enterEasing))) togetherWith
+                    (slideOutHorizontally(animationSpec = tween(WindMotion.DurMedium, easing = exitEasing)) { -it / 3 } +
+                        fadeOut(animationSpec = tween(WindMotion.DurMedium, easing = exitEasing)))
                 } else {
                     // Back (category → list): list enters from left,
                     // old page exits to right — reverse of forward
-                    (slideInHorizontally { -it / 3 } + fadeIn()) togetherWith
-                    (slideOutHorizontally { it / 3 } + fadeOut())
+                    (slideInHorizontally(animationSpec = tween(WindMotion.DurMedium, easing = enterEasing)) { -it / 3 } +
+                        fadeIn(animationSpec = tween(WindMotion.DurMedium, easing = enterEasing))) togetherWith
+                    (slideOutHorizontally(animationSpec = tween(WindMotion.DurMedium, easing = exitEasing)) { it / 3 } +
+                        fadeOut(animationSpec = tween(WindMotion.DurMedium, easing = exitEasing)))
                 }
             },
             modifier = Modifier.padding(padding),
@@ -106,6 +125,7 @@ fun MobileSettingsScreen(
                         SettingsPage.SCREENSHOT -> ScreenshotCategory(settings, onSettingsChanged)
                         SettingsPage.APPEARANCE -> AppearanceCategory(settings, onSettingsChanged)
                         SettingsPage.LANGUAGE -> LanguageCategory(settings, onSettingsChanged)
+                        SettingsPage.AI_TRANSLATE -> AiTranslateCategory()
                         SettingsPage.ADVANCED -> AdvancedCategory(settings, onSettingsChanged)
                         SettingsPage.ABOUT -> AboutCategory(settings)
                     }
@@ -435,6 +455,271 @@ private fun AboutCategory(s: PlayerSettings) {
 
     Spacer(Modifier.height(28.dp))
     Text(I18n.get("about_license"), color = WindColors.DustTaupe, fontSize = 13.sp)
+}
+
+// ------------------------------------------------------------------
+// AI Translation category
+// ------------------------------------------------------------------
+
+@Composable
+private fun AiTranslateCategory() {
+    val context = LocalContext.current
+    var config by remember { mutableStateOf(TranslationConfigHelper.load(context)) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+
+    fun update(newConfig: TranslationConfig) {
+        config = newConfig
+        TranslationConfigHelper.save(context, newConfig)
+    }
+
+    // Whisper model selection + download status.
+    val fetcher = remember { ModelFetcher(context) }
+    var downloadProgress by remember { mutableStateOf(-1) }
+    val currentModel = WhisperModelWhiteList.ALL.find { it.fileName == config.whisperModel }
+    var downloadError by remember { mutableStateOf<String?>(null) }
+    // Bump to force recomposition after model delete (file system change
+    // isn't automatically observed by Compose).
+    var modelRefreshKey by remember { mutableStateOf(0) }
+    val isDownloaded = remember(modelRefreshKey) { fetcher.isModelPresent(config.whisperModel) }
+    var deleteTarget by remember { mutableStateOf<WhisperModelWhiteList.ModelInfo?>(null) }
+
+    Text(I18n.get("whisper_model"), color = WindColors.Slate, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+    Spacer(Modifier.height(4.dp))
+    WhisperModelWhiteList.ALL.forEach { model ->
+        val selected = config.whisperModel == model.fileName
+        val present = remember(modelRefreshKey, model.fileName) { fetcher.isModelPresent(model.fileName) }
+        Surface(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            onClick = { update(config.copy(whisperModel = model.fileName)) },
+            color = if (selected) WindColors.Ink else WindColors.White,
+            shape = WindRadius.Button
+        ) {
+            Row(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        model.displayName,
+                        color = if (selected) WindColors.CanvasCream else WindColors.Ink,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        model.description,
+                        color = if (selected) WindColors.CanvasCream.copy(alpha = 0.7f) else WindColors.Slate,
+                        fontSize = 12.sp
+                    )
+                }
+                if (present) {
+                    Text(
+                        "✓",
+                        color = if (selected) WindColors.CanvasCream else WindColors.SignalOrange,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    // Delete button (trash icon) — only show on downloaded models.
+                    Spacer(Modifier.width(8.dp))
+                    Surface(
+                        onClick = { deleteTarget = model },
+                        color = Color.Transparent,
+                        shape = WindRadius.Pill
+                    ) {
+                        PhosphorIcon(
+                            Phosphor.X,
+                            "Delete",
+                            tint = if (selected) WindColors.CanvasCream.copy(alpha = 0.7f) else WindColors.DustTaupe,
+                            size = 16.dp
+                        )
+                    }
+                } else if (downloadProgress >= 0 && config.whisperModel == model.fileName) {
+                    Text(
+                        "${downloadProgress}%",
+                        color = if (selected) WindColors.CanvasCream else WindColors.SignalOrange,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        }
+    }
+
+    // Download button for current model.
+    if (!isDownloaded && downloadProgress < 0) {
+        Surface(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+            onClick = {
+                scope.launch {
+                    downloadProgress = 0
+                    downloadError = null
+
+                    // Create a system notification so Android keeps the process
+                    // alive during the download and the user sees progress even
+                    // if they background the app.
+                    val notifMgr = context.getSystemService(android.app.NotificationManager::class.java)
+                    val channelId = "model_download"
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        notifMgr.createNotificationChannel(
+                            android.app.NotificationChannel(channelId, "Model Downloads", android.app.NotificationManager.IMPORTANCE_LOW)
+                        )
+                    }
+                    val notifBuilder = NotificationCompat.Builder(context, channelId)
+                        .setContentTitle("Downloading ${currentModel?.displayName ?: config.whisperModel}")
+                        .setContentText("0%")
+                        .setSmallIcon(android.R.drawable.stat_sys_download)
+                        .setOngoing(true)
+                        .setProgress(100, 0, false)
+
+                    // Use a unique notification ID per download attempt.
+                    val notifId = 2000 + config.whisperModel.hashCode()
+                    notifMgr.notify(notifId, notifBuilder.build())
+
+                    val result = withContext(Dispatchers.IO) {
+                        fetcher.ensureModel(config.whisperModel) { downloaded, total ->
+                            if (total > 0) {
+                                val pct = (downloaded.toFloat() / total.toFloat() * 100).toInt()
+                                downloadProgress = pct
+                                // Update notification progress.
+                                notifBuilder
+                                    .setContentText("$pct%")
+                                    .setProgress(100, pct, false)
+                                notifMgr.notify(notifId, notifBuilder.build())
+                            }
+                        }
+                    }
+
+                    // Download finished — remove notification.
+                    notifMgr.cancel(notifId)
+                    downloadProgress = -1
+
+                    if (result != null) {
+                        Toast.makeText(context, I18n.get("model_status_downloaded"), Toast.LENGTH_SHORT).show()
+                        modelRefreshKey++ // refresh ✓ indicators
+                    } else {
+                        downloadError = "Download failed — HuggingFace may be blocked. Try VPN or check network."
+                        Toast.makeText(context, downloadError!!, Toast.LENGTH_LONG).show()
+                    }
+                }
+            },
+            color = WindColors.SignalOrange,
+            shape = WindRadius.Pill
+        ) {
+            Text(
+                I18n.get("model_status_download"),
+                color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+
+    // Show download progress bar or error message.
+    if (downloadProgress >= 0) {
+        LinearProgressIndicator(
+            progress = { downloadProgress / 100f },
+            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            color = WindColors.SignalOrange,
+            trackColor = WindColors.Hairline
+        )
+    }
+    if (downloadError != null) {
+        Text(
+            downloadError!!,
+            color = WindColors.SignalOrange,
+            fontSize = 12.sp,
+            modifier = Modifier.padding(vertical = 4.dp)
+        )
+    }
+
+    // Delete model confirmation dialog.
+    if (deleteTarget != null) {
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("Delete model?", color = WindColors.Ink, fontWeight = FontWeight.Medium) },
+            text = {
+                Text(
+                    "Delete \"${deleteTarget!!.displayName}\"?\nThis frees up storage but you'll need to re-download it to use ASR again.",
+                    color = WindColors.Slate, fontSize = 14.sp
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val ok = fetcher.deleteModel(deleteTarget!!.fileName)
+                    deleteTarget = null
+                    modelRefreshKey++ // trigger recompose
+                    if (ok) {
+                        Toast.makeText(context, "Model deleted", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "Delete failed", Toast.LENGTH_SHORT).show()
+                    }
+                }) { Text("Delete", color = WindColors.SignalOrange, fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) {
+                    Text("Cancel", color = WindColors.Slate)
+                }
+            },
+            containerColor = WindColors.White
+        )
+    }
+
+    Spacer(Modifier.height(16.dp))
+
+    // LLM configuration section.
+    Text("LLM", color = WindColors.Slate, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+    Spacer(Modifier.height(4.dp))
+    SecureTextFieldRow(I18n.get("llm_api_key"), config.llmApiKey, "sk-…") {
+        update(config.copy(llmApiKey = it))
+    }
+    TextFieldRow(I18n.get("llm_base_url"), config.llmBaseUrl, "https://api.openai.com/v1") {
+        update(config.copy(llmBaseUrl = it))
+    }
+    TextFieldRow(I18n.get("llm_model_name"), config.llmModel, "gpt-4o-mini") {
+        update(config.copy(llmModel = it))
+    }
+    TextFieldRow(I18n.get("target_language"), config.targetLanguage, "中文") {
+        update(config.copy(targetLanguage = it))
+    }
+
+    if (config.llmApiKey.isBlank()) {
+        Spacer(Modifier.height(8.dp))
+        Text(
+            I18n.get("gen_sub_no_api_key"),
+            color = WindColors.Slate, fontSize = 12.sp
+        )
+    }
+}
+
+/** Password-style text field for API keys. */
+@Composable
+private fun SecureTextFieldRow(label: String, value: String, placeholder: String, onValueChange: (String) -> Unit) {
+    var visible by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Text(label, color = WindColors.Ink, fontSize = 14.sp)
+        Spacer(Modifier.height(6.dp))
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            singleLine = true,
+            visualTransformation = if (visible) androidx.compose.ui.text.input.VisualTransformation.None
+                else androidx.compose.ui.text.input.PasswordVisualTransformation(),
+            trailingIcon = {
+                IconButton(onClick = { visible = !visible }) {
+                    PhosphorIcon(
+                        Phosphor.EYE,
+                        null, tint = if (visible) WindColors.SignalOrange else WindColors.Slate, size = 18.dp
+                    )
+                }
+            },
+            placeholder = { Text(placeholder, color = WindColors.DustTaupe, fontSize = 13.sp) },
+            modifier = Modifier.fillMaxWidth(),
+            shape = WindRadius.Pill,
+            textStyle = androidx.compose.ui.text.TextStyle(color = WindColors.Ink, fontSize = 13.sp),
+            colors = TextFieldDefaults.colors(
+                cursorColor = WindColors.Ink,
+                focusedContainerColor = WindColors.White,
+                unfocusedContainerColor = WindColors.White,
+                focusedIndicatorColor = WindColors.Ink,
+                unfocusedIndicatorColor = WindColors.Hairline
+            )
+        )
+    }
 }
 
 // ------------------------------------------------------------------

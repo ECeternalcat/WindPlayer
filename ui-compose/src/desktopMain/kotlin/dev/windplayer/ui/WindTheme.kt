@@ -2,12 +2,10 @@ package dev.windplayer.ui
 
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -39,7 +37,6 @@ object WindColors {
     var Ink by mutableStateOf(Color(0xFF141413))
     var Charcoal by mutableStateOf(Color(0xFF262627))
     var Slate by mutableStateOf(Color(0xFF696969))
-    var Granite by mutableStateOf(Color(0xFF555555))
     var DustTaupe by mutableStateOf(Color(0xFFD1CDC7))
     var Hairline by mutableStateOf(Color(0xFFE2DDD5))
 
@@ -88,7 +85,8 @@ object WindColors {
     val MediaSurface = Color(0xFF2A2826)
     val MediaCream = Color(0xFFF3F0EE)
     val MediaMuted = Color(0xFFD1CDC7)
-    val MediaAccent = Color(0xFFF37338)
+    /** ARCH-6: named scrim for the cheatsheet / modal overlays in player UI. */
+    val MediaScrim = Color(0xE6000000)
 
     /** Swap the whole palette. Idempotent — reassigning the same value is a no-op. */
     fun applyDark(dark: Boolean) {
@@ -100,7 +98,6 @@ object WindColors {
             Ink = Color(0xFFF3F0EE)
             Charcoal = Color(0xFFD1CDC7)
             Slate = Color(0xFFA8A29A)
-            Granite = Color(0xFF8A857E)
             DustTaupe = Color(0xFF6E6A64)
             Hairline = Color(0xFF3A3735)
             SignalOrange = Color(0xFFE8511A)
@@ -115,7 +112,6 @@ object WindColors {
             Ink = Color(0xFF141413)
             Charcoal = Color(0xFF262627)
             Slate = Color(0xFF696969)
-            Granite = Color(0xFF555555)
             DustTaupe = Color(0xFFD1CDC7)
             Hairline = Color(0xFFE2DDD5)
             SignalOrange = Color(0xFFCF4500)
@@ -144,11 +140,10 @@ object WindRadius {
 
 /**
  * Soft atmospheric shadows (low opacity, large spread) — never hard-edged.
+ *
+ * ARCH-1: the `WindElevation` object was removed (zero usages). If shadow
+ * tokens are needed later, re-introduce them here.
  */
-object WindElevation {
-    val NavShadow = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.04f)
-    val CardShadow = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.08f)
-}
 
 val WindTypographyRaw = Typography(
     displayLarge = TextStyle(
@@ -345,15 +340,5 @@ fun windColorSchemeAuto(isDark: Boolean): ColorScheme = if (isDark) {
         outlineVariant = Color(0xFFD1CDC7),
         error = Color(0xFFCF4500),
         onError = Color(0xFFFFFFFF)
-    )
-}
-
-@Composable
-fun WindTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = windColorScheme(false),
-        typography = WindTypography,
-        shapes = WindShapes,
-        content = content
     )
 }

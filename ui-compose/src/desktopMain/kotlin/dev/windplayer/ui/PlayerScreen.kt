@@ -1,5 +1,15 @@
 package dev.windplayer.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -11,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -356,23 +367,26 @@ fun PlayerScreen(
             ) {
                 Icon(
                     painter = iconPainter(PhosphorIcons.ARROW_LEFT),
-                    contentDescription = "Back",
+                    contentDescription = I18n.get("back"),
                     tint = Color.White,
                     modifier = Modifier.size(18.dp)
                 )
             }
 
+            // WindMotion: subtle press-scale on primary controls.
+            val playPauseSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
             IconButton(
                 onClick = {
                     if (fileLoaded) {
                         player.command("cycle", "pause")
                     }
                 },
-                modifier = Modifier.size(32.dp)
+                interactionSource = playPauseSource,
+                modifier = Modifier.size(32.dp).pressScale(playPauseSource)
             ) {
                 Icon(
                     painter = if (isPlaying) pauseIcon else playIcon,
-                    contentDescription = if (isPlaying) "Pause" else "Play",
+                    contentDescription = if (isPlaying) I18n.get("pause") else I18n.get("play"),
                     tint = Color.White,
                     modifier = Modifier.size(20.dp)
                 )
@@ -389,7 +403,7 @@ fun PlayerScreen(
                 ) {
                     Icon(
                         painter = iconPainter(PhosphorIcons.LIST),
-                        contentDescription = "Tracks",
+                        contentDescription = I18n.get("tracks"),
                         tint = if (showTrackSheet) WindColors.LightSignalOrange else WindColors.MediaCream,
                         modifier = Modifier.size(18.dp)
                     )
@@ -414,7 +428,30 @@ fun PlayerScreen(
                 }
             }
 
-            if (osdText.isNotBlank()) {
+            // WindMotion: OSD fade + scale so volume/seek feedback feels alive.
+            // Use animateFloatAsState (not AnimatedVisibility) to keep the row's
+            // weight allocation stable — the surrounding buttons shouldn't
+            // shift when OSD appears/disappears.
+            val osdAlpha by animateFloatAsState(
+                targetValue = if (osdText.isNotBlank()) 1f else 0f,
+                animationSpec = tween(WindMotion.DurFast, easing = WindMotion.EasingStandard),
+                label = "osdAlpha"
+            )
+            val osdScale by animateFloatAsState(
+                targetValue = if (osdText.isNotBlank()) 1f else 0.92f,
+                animationSpec = tween(WindMotion.DurFast, easing = WindMotion.EasingStandard),
+                label = "osdScale"
+            )
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 8.dp)
+                    .graphicsLayer {
+                        alpha = osdAlpha
+                        scaleX = osdScale
+                        scaleY = osdScale
+                    }
+            ) {
                 Text(
                     text = osdText,
                     color = Color.White,
@@ -423,10 +460,8 @@ fun PlayerScreen(
                     textAlign = TextAlign.Center,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                    modifier = Modifier.fillMaxWidth()
                 )
-            } else {
-                Spacer(modifier = Modifier.weight(1f))
             }
 
             if (fileLoaded) {
@@ -436,7 +471,7 @@ fun PlayerScreen(
                 ) {
                     Icon(
                         painter = if (isMuted) speakerSlashIcon else speakerHighIcon,
-                        contentDescription = if (isMuted) "Unmute" else "Mute",
+                        contentDescription = if (isMuted) I18n.get("unmute") else I18n.get("mute"),
                         tint = WindColors.MediaCream,
                         modifier = Modifier.size(18.dp)
                     )
@@ -467,7 +502,7 @@ fun PlayerScreen(
             ) {
                 Icon(
                     painter = if (isFullscreen) cornersInIcon else cornersOutIcon,
-                    contentDescription = if (isFullscreen) "Windowed" else "Fullscreen",
+                    contentDescription = if (isFullscreen) I18n.get("windowed") else I18n.get("fullscreen"),
                     tint = Color.White,
                     modifier = Modifier.size(18.dp)
                 )
@@ -483,7 +518,7 @@ fun PlayerScreen(
                 ) {
                     Icon(
                         painter = iconPainter(PhosphorIcons.LIGHTNING),
-                        contentDescription = if (hwdecAuto) "HW Decode" else "SW Decode",
+                        contentDescription = if (hwdecAuto) I18n.get("hw_decode") else I18n.get("sw_decode"),
                         tint = if (hwdecAuto) WindColors.LightSignalOrange else WindColors.MediaMuted,
                         modifier = Modifier.size(18.dp)
                     )
@@ -517,7 +552,15 @@ fun PlayerScreen(
             )
         }
 
-        if (showTrackSheet) {
+        // WindMotion: panels slide up + fade to match the LayoutManager's
+        // physical panel-expand on the Swing side. Previously hard cuts.
+        AnimatedVisibility(
+            visible = showTrackSheet,
+            enter = slideInVertically(animationSpec = tween(WindMotion.DurMedium, easing = WindMotion.EasingStandard)) { it / 2 } +
+                fadeIn(animationSpec = tween(WindMotion.DurMedium, easing = WindMotion.EasingStandard)),
+            exit = slideOutVertically(animationSpec = tween(WindMotion.DurMedium, easing = WindMotion.EasingExit)) { it / 2 } +
+                fadeOut(animationSpec = tween(WindMotion.DurMedium, easing = WindMotion.EasingExit))
+        ) {
             TrackSelectionSheet(
                 player = player,
                 onDismiss = {
@@ -531,7 +574,13 @@ fun PlayerScreen(
             )
         }
 
-        if (showPlaylist) {
+        AnimatedVisibility(
+            visible = showPlaylist,
+            enter = slideInVertically(animationSpec = tween(WindMotion.DurMedium, easing = WindMotion.EasingStandard)) { it / 2 } +
+                fadeIn(animationSpec = tween(WindMotion.DurMedium, easing = WindMotion.EasingStandard)),
+            exit = slideOutVertically(animationSpec = tween(WindMotion.DurMedium, easing = WindMotion.EasingExit)) { it / 2 } +
+                fadeOut(animationSpec = tween(WindMotion.DurMedium, easing = WindMotion.EasingExit))
+        ) {
             PlaylistPanel(
                 videoPaths = directoryVideoPaths,
                 currentIndex = currentFileIndex,
@@ -547,7 +596,12 @@ fun PlayerScreen(
             )
         }
 
-        if (showCheatsheet) {
+        // Cheatsheet: full-screen overlay, fade + scale (no slide).
+        AnimatedVisibility(
+            visible = showCheatsheet,
+            enter = fadeIn(animationSpec = tween(WindMotion.DurMedium, easing = WindMotion.EasingStandard)),
+            exit = fadeOut(animationSpec = tween(WindMotion.DurMedium, easing = WindMotion.EasingExit))
+        ) {
             CheatsheetOverlay(onDismiss = {
                 showCheatsheet = false
                 callbacks.onTracksToggle(showTrackSheet || showPlaylist)
@@ -625,7 +679,7 @@ private fun PlaylistPanel(
             IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
                 Icon(
                     painter = iconPainter(PhosphorIcons.X),
-                    contentDescription = "Close",
+                    contentDescription = I18n.get("close"),
                     tint = WindColors.MediaMuted,
                     modifier = Modifier.size(16.dp)
                 )
@@ -639,9 +693,15 @@ private fun PlaylistPanel(
                 val path = videoPaths[index]
                 val name = path.substringAfterLast('/').substringAfterLast('\\')
                 val isCurrent = index == currentIndex
+                // WindMotion: animate current-track highlight.
+                val itemBg by animateColorAsState(
+                    targetValue = if (isCurrent) WindColors.LightSignalOrange.copy(alpha = 0.15f) else Color.Transparent,
+                    animationSpec = tween(WindMotion.DurFast, easing = WindMotion.EasingStandard),
+                    label = "playlistBg"
+                )
                 Surface(
-                    modifier = Modifier.fillMaxWidth().clickable { onJumpToFile(path) },
-                    color = if (isCurrent) WindColors.LightSignalOrange.copy(alpha = 0.15f) else Color.Transparent
+                    modifier = Modifier.fillMaxWidth().animateItem().clickable { onJumpToFile(path) },
+                    color = itemBg
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
@@ -739,7 +799,8 @@ private fun CheatsheetOverlay(onDismiss: () -> Unit) {
 
     Surface(
         modifier = Modifier.fillMaxSize().clickable { onDismiss() },
-        color = Color(0xE6000000)
+        // ARCH-6: use the named MediaScrim token instead of an inline hex.
+        color = WindColors.MediaScrim
     ) {
         Column(
             modifier = Modifier.fillMaxSize().padding(16.dp)
@@ -758,7 +819,7 @@ private fun CheatsheetOverlay(onDismiss: () -> Unit) {
                 IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
                     Icon(
                         painter = iconPainter(PhosphorIcons.X),
-                        contentDescription = "Close",
+                        contentDescription = I18n.get("close"),
                         tint = WindColors.MediaMuted,
                         modifier = Modifier.size(16.dp)
                     )

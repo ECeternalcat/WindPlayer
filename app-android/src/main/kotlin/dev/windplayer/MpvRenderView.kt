@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -57,7 +58,8 @@ class MpvRenderView(
                     // mpv calls are serialized by MpvPlayer.lock internally.
                     // No outer synchronized(player) needed (would be harmful:
                     // blocks all player callers; see A-2026-H7).
-                    if (!player.isCreated()) {
+                    val firstInit = !player.isCreated()
+                    if (firstInit) {
                         player.createWithContext(context)
                         val s = SettingsHelper.load(context)
                         player.setOption("vo", "gpu")
@@ -70,35 +72,47 @@ class MpvRenderView(
                         player.setOption("screenshot-directory", context.getExternalFilesDir(null)?.absolutePath ?: context.filesDir.absolutePath)
                         Log.i(TAG, "Attaching surface...")
                     }
-                    if (!surfaceValid.get()) {
-                        Log.i(TAG, "surface invalidated before attach, aborting")
-                        return@launch
-                    }
-                    player.attachSurface(holder.surface)
-                    player.initialize()
-                    if (!firstInitDone.getAndSet(true)) {
-                        Log.i(TAG, "mpv ready, handing off to screen for loadfile")
-                        // Screen takes it from here: opens pfd (if needed) and
-                        // issues loadfile. Centralized pfd ownership = no leaks.
-                        onSurfaceReady()
-                    } else {
-                        Log.i(TAG, "surface reattached (resuming playback)")
-                        // Force mpv to re-init the video chain so it binds to
-                        // the freshly-attached surface. Without this the vo
-                        // (torn down when the surface was destroyed in the
-                        // background) never recovers → audio-only black screen.
-                        // (Network also reloads via onSurfaceReattached below,
-                        // which re-inits video too; this covers local files.)
-                        try {
-                            player.setProperty("vid", "no")
-                            player.setProperty("vid", "1")
-                        } catch (_: Exception) {}
-                        // Notify the screen AFTER the surface is bound — it
-                        // uses this to reload network streams (whose proxy
-                        // session died in the background) so loadfile runs
-                        // against a live surface instead of racing this
-                        // attach (which left video black with audio only).
-                        onSurfaceReattached()
+                    // CON-3: do attach + initialize on the Main thread.
+                    // surfaceCreated and surfaceDestroyed both fire on Main,
+                    // so running attach here serializes against any pending
+                    // destroy. The previous code ran attach on Dispatchers.IO
+                    // which created a TOCTOU window: surfaceValid.get() could
+                    // return true, then surfaceDestroyed fires on Main and
+                    // detaches, then the IO coroutine resumes and calls
+                    // attachSurface against an already-destroyed Surface.
+                    // attachSurface is a fast JNI call; initialize() is the
+                    // slow step but only on first init.
+                    withContext(Dispatchers.Main) {
+                        if (!surfaceValid.get()) {
+                            Log.i(TAG, "surface invalidated before attach, aborting")
+                            return@withContext
+                        }
+                        player.attachSurface(holder.surface)
+                        player.initialize()
+                        if (firstInit && !firstInitDone.getAndSet(true)) {
+                            Log.i(TAG, "mpv ready, handing off to screen for loadfile")
+                            // Screen takes it from here: opens pfd (if needed) and
+                            // issues loadfile. Centralized pfd ownership = no leaks.
+                            onSurfaceReady()
+                        } else {
+                            Log.i(TAG, "surface reattached (resuming playback)")
+                            // Force mpv to re-init the video chain so it binds to
+                            // the freshly-attached surface. Without this the vo
+                            // (torn down when the surface was destroyed in the
+                            // background) never recovers → audio-only black screen.
+                            // (Network also reloads via onSurfaceReattached below,
+                            // which re-inits video too; this covers local files.)
+                            try {
+                                player.setProperty("vid", "no")
+                                player.setProperty("vid", "1")
+                            } catch (_: Exception) {}
+                            // Notify the screen AFTER the surface is bound — it
+                            // uses this to reload network streams (whose proxy
+                            // session died in the background) so loadfile runs
+                            // against a live surface instead of racing this
+                            // attach (which left video black with audio only).
+                            onSurfaceReattached()
+                        }
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Player init error", e)

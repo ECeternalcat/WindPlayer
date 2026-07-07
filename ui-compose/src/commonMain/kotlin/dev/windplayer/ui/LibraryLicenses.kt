@@ -15,7 +15,7 @@ val THIRD_PARTY_LIBRARIES: List<LibraryLicense> = listOf(
     LibraryLicense("mpv", "—", "GPL v2+", "https://github.com/mpv-player/mpv"),
     LibraryLicense("libmpv", "—", "GPL v2+", "https://github.com/mpv-player/mpv/blob/master/Copyright"),
     LibraryLicense("mpv-android (libplayer)", "—", "GPL v2+", "https://github.com/mpv-android/mpv-android"),
-    LibraryLicense("Compose Multiplatform", "1.9.0", "Apache 2.0", "https://github.com/JetBrains/compose-multiplatform"),
+    LibraryLicense("Compose Multiplatform", "1.11.1", "Apache 2.0", "https://github.com/JetBrains/compose-multiplatform"),
     LibraryLicense("Kotlin Coroutines", "1.10.2", "Apache 2.0", "https://github.com/Kotlin/kotlinx.coroutines"),
     LibraryLicense("Java Native Access (JNA)", "5.17.0", "Apache 2.0", "https://github.com/java-native-access/jna"),
     LibraryLicense("SSHJ", "0.39.0", "Apache 2.0", "https://github.com/hierynomus/sshj"),

@@ -1,6 +1,5 @@
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.compose.compiler)
 }
 
@@ -43,6 +42,8 @@ android {
             // libplayer.so needed for Surface attachment
         }
     }
+    buildToolsVersion = "37.0.0"
+    ndkVersion = "30.0.14904198 rc1"
 }
 
 kotlin {
@@ -63,6 +64,9 @@ dependencies {
 
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    // Whisper ASR engine (pure native C++ + JNI bridge, arm64-v8a only).
+    implementation(files("libs/whisper-android.aar"))
 
     // Compose: CMP 1.9.0 embeds Compose UI 1.7.x. The BOM 2024.10.01 maps to
     // the same 1.7.x line, so they are aligned. When upgrading CMP, the BOM

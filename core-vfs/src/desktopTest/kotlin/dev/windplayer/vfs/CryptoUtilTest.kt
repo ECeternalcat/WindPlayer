@@ -57,13 +57,13 @@ class CryptoUtilTest {
 
     @Test
     fun `on non-Windows encrypt returns plain-prefixed`() {
-        if (!!isWindows) return // Test only runs on non-Windows
+        if (isWindows) return // Test only runs on non-Windows
         assertEquals("plain:hello", CryptoUtil.encrypt("hello"))
     }
 
     @Test
     fun `on non-Windows decrypt of dpapi value returns empty`() {
-        if (!!isWindows) return // Test only runs on non-Windows
+        if (isWindows) return // Test only runs on non-Windows
         // Can't decrypt DPAPI data on non-Windows
         assertEquals("", CryptoUtil.decrypt("dpapi:AAAA"))
     }

@@ -1,6 +1,7 @@
 package dev.windplayer.ui
 
 import androidx.compose.animation.*
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -69,7 +70,7 @@ fun SettingsScreen(
                 IconButton(onClick = onBack, modifier = Modifier.size(36.dp)) {
                     Icon(
                         painter = iconPainter(PhosphorIcons.ARROW_LEFT),
-                        contentDescription = "Back",
+                        contentDescription = I18n.get("back"),
                         tint = WindColors.Ink,
                         modifier = Modifier.size(20.dp)
                     )
@@ -88,11 +89,28 @@ fun SettingsScreen(
             // Category list
             SettingsCategory.entries.forEach { category ->
                 val isSelected = selectedCategory == category
+                // WindMotion: animate selection background + tint so moving
+                // between categories feels smooth (was a hard color swap).
+                val categoryBg by animateColorAsState(
+                    targetValue = if (isSelected) WindColors.CanvasCream else Color.Transparent,
+                    animationSpec = tween(WindMotion.DurFast, easing = WindMotion.EasingStandard),
+                    label = "categoryBg"
+                )
+                val iconTint by animateColorAsState(
+                    targetValue = if (isSelected) WindColors.SignalOrange else WindColors.Slate,
+                    animationSpec = tween(WindMotion.DurFast, easing = WindMotion.EasingStandard),
+                    label = "iconTint"
+                )
+                val textTint by animateColorAsState(
+                    targetValue = if (isSelected) WindColors.Ink else WindColors.Slate,
+                    animationSpec = tween(WindMotion.DurFast, easing = WindMotion.EasingStandard),
+                    label = "textTint"
+                )
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable { selectedCategory = category },
-                    color = if (isSelected) WindColors.CanvasCream else Color.Transparent
+                    color = categoryBg
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 20.dp, vertical = 11.dp),
@@ -101,13 +119,13 @@ fun SettingsScreen(
                         Icon(
                             painter = iconPainter(category.icon),
                             contentDescription = null,
-                            tint = if (isSelected) WindColors.SignalOrange else WindColors.Slate,
+                            tint = iconTint,
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(12.dp))
                         Text(
                             text = I18n.get(category.titleKey),
-                            color = if (isSelected) WindColors.Ink else WindColors.Slate,
+                            color = textTint,
                             fontSize = 13.sp,
                             fontWeight = if (isSelected) FontWeight.Medium else FontWeight.Normal
                         )
@@ -126,7 +144,13 @@ fun SettingsScreen(
         ) {
             AnimatedContent(
                 targetState = selectedCategory,
-                transitionSpec = { fadeIn() togetherWith fadeOut() },
+                // WindMotion: cross-fade between category pages with standard
+                // easing. Was default spring (no duration); now aligned with
+                // the rest of the app.
+                transitionSpec = {
+                    fadeIn(animationSpec = tween(WindMotion.DurMedium, easing = WindMotion.EasingStandard)) togetherWith
+                    fadeOut(animationSpec = tween(WindMotion.DurMedium, easing = WindMotion.EasingExit))
+                },
                 label = "settings"
             ) { category ->
                 Column {
@@ -425,7 +449,9 @@ private fun AccentSelectorRow(
                             .size(14.dp)
                             .clip(CircleShape)
                             .background(
-                                if (mode == AccentColor.WINDPLAYER) Color(0xFFCF4500)
+                                // ARCH-6: use WindColors.SignalOrange so the
+                                // swatch follows applyAccent overrides.
+                                if (mode == AccentColor.WINDPLAYER) WindColors.SignalOrange
                                 else systemAccent
                             )
                     )
@@ -561,7 +587,7 @@ private fun AboutSection() {
 
     // Phosphor Icons credit
     Text(
-        text = "Icons by Phosphor Icons (MIT)",
+        text = I18n.get("about_icons"),
         color = WindColors.Slate,
         fontSize = 13.sp
     )
@@ -602,7 +628,8 @@ private fun AboutSection() {
     Spacer(modifier = Modifier.height(4.dp))
     Text(
         text = "github.com/ECeternalcat/WindPlayer",
-        color = Color(0xFF3860BE),
+        // ARCH-6: use WindColors.LinkBlue so the link follows theme/accent.
+        color = WindColors.LinkBlue,
         fontSize = 14.sp,
         modifier = Modifier.clickable {
             try {
@@ -967,16 +994,24 @@ private fun ThemeSelectorRow(
     ) {
         options.forEach { (mode, label) ->
             val isActive = selected == mode
+            // WindMotion: animate pill selection state.
+            val pillBg by animateColorAsState(
+                targetValue = if (isActive) WindColors.Ink else WindColors.White,
+                animationSpec = tween(WindMotion.DurFast, easing = WindMotion.EasingStandard),
+                label = "themePillBg"
+            )
+            val pillBorder by animateColorAsState(
+                targetValue = if (isActive) WindColors.Ink else WindColors.Hairline,
+                animationSpec = tween(WindMotion.DurFast, easing = WindMotion.EasingStandard),
+                label = "themePillBorder"
+            )
             Surface(
                 modifier = Modifier
                     .weight(1f)
                     .clickable { onSelect(mode) },
                 shape = WindRadius.Button,
-                color = if (isActive) WindColors.Ink else WindColors.White,
-                border = androidx.compose.foundation.BorderStroke(
-                    1.5.dp,
-                    if (isActive) WindColors.Ink else WindColors.Hairline
-                )
+                color = pillBg,
+                border = androidx.compose.foundation.BorderStroke(1.5.dp, pillBorder)
             ) {
                 Text(
                     text = label,

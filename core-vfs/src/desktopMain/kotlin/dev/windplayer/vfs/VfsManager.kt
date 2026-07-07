@@ -11,6 +11,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -226,14 +227,20 @@ class VfsManager {
      * actually close before the JVM exits (fire-and-forget left zombie
      * sessions on shutdown). runBlocking is acceptable here because this
      * is called from windowClosing / shutdown hook, never from UI code.
+     *
+     * CON-9: bound the wait to 2s so an unresponsive SSH host doesn't hang
+     * the Swing EDT (windowClosing) indefinitely. Responsive hosts close
+     * in <100ms; the OS reaps any stragglers when the JVM exits anyway.
      */
     fun shutdown() {
         val toDisconnect = clients.toList()
         clients.clear()
         streamProxy.stop()
         runBlocking {
-            for ((_, client) in toDisconnect) {
-                runCatching { client.disconnect() }
+            withTimeoutOrNull(2000) {
+                for ((_, client) in toDisconnect) {
+                    runCatching { client.disconnect() }
+                }
             }
         }
         ioScope.cancel()
@@ -317,6 +324,11 @@ class VfsManager {
                     props.setProperty("server.$index.useTls", server.useTls.toString())
                 }
                 FileOutputStream(configFile).use { props.store(it, "WindPlayer Server Configurations") }
+                // SEC-1: tighten to 0600 on POSIX so other local users can't
+                // read hostnames/usernames (and plaintext passwords on non-Windows).
+                // No-op on Windows where DPAPI already protects the cipher blobs
+                // and the JVM doesn't honour PosixFilePermissions.
+                restrictFilePermissions(configFile)
             } catch (e: Exception) {
                 LOG.warning("saveConfig failed: ${e.message}")
             }

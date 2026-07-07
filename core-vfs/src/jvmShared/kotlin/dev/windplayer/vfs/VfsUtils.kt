@@ -38,14 +38,8 @@ fun formatDurationOsd(current: Double, total: Double): String {
 // ------------------------------------------------------------------
 // File ordering
 // ------------------------------------------------------------------
-
-/**
- * Default [FileNode] ordering used by every VFS client and SAF listing.
- *
- * Directories first (descending `isDirectory`), then alphabetical by lowercased name.
- */
-val FileNodeComparator: Comparator<FileNode> =
-    compareByDescending<FileNode> { it.isDirectory }.thenBy { it.name.lowercase() }
+// ARCH-3: FileNodeComparator moved to commonMain/FileNode.kt — it has no
+// JVM dependency and belongs with the FileNode type it orders.
 
 // ------------------------------------------------------------------
 // Formatting helpers (JVM-only — use java.lang.String.format)
@@ -88,9 +82,14 @@ fun buildUrlWithCredentials(
     path: String
 ): String {
     val userInfo = if (username.isNotBlank()) {
-        val encodedUser = java.net.URLEncoder.encode(username, "UTF-8")
+        // SEC-7: URLEncoder.encode is an HTML form encoder — it emits `+` for
+        // space, but RFC 3986 userinfo requires `%20`. A password containing a
+        // space would become `my+pass`, which some servers decode as a literal
+        // `+`, breaking auth or matching the wrong account. Post-replace to
+        // the RFC 3986 encoding.
+        val encodedUser = java.net.URLEncoder.encode(username, "UTF-8").replace("+", "%20")
         if (password.isNotBlank()) {
-            val encodedPass = java.net.URLEncoder.encode(password, "UTF-8")
+            val encodedPass = java.net.URLEncoder.encode(password, "UTF-8").replace("+", "%20")
             "$encodedUser:$encodedPass@$host"
         } else {
             "$encodedUser@$host"

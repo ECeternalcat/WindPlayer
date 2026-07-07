@@ -151,6 +151,40 @@ fun MobileApp(
 
     LaunchedEffect(settings.language) { I18n.current = settings.language }
 
+    // AI Translation choice sheet — observable by any screen via TranslationStarter.
+    val translateRequest by dev.windplayer.translate.TranslationStarter.pendingRequest.collectAsState()
+    translateRequest?.let { params ->
+        dev.windplayer.translate.TranslateChoiceSheet(
+            params = params,
+            onDismiss = { dev.windplayer.translate.TranslationStarter.consume() }
+        )
+    }
+
+    // Request POST_NOTIFICATIONS permission on Android 13+ so the translation
+    // ForegroundService notification is visible.
+    // BUG-34: show Toast if denied so the user knows notifications won't appear.
+    LaunchedEffect(Unit) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            val perm = android.content.pm.PackageManager.PERMISSION_GRANTED
+            val current = context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+            if (current != perm) {
+                (context as? android.app.Activity)?.requestPermissions(
+                    arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1001
+                )
+                // After request, check result (requestPermissions is async but
+                // the permission state updates synchronously on most devices
+                // when the dialog is dismissed). If still denied, inform user.
+                kotlinx.coroutines.delay(500) // wait for dialog
+                val after = context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                if (after != perm) {
+                    Toast.makeText(context,
+                        "Notifications disabled — translation progress won't show in status bar",
+                        Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
     // Handle external video URI (from ACTION_VIEW / ACTION_SEND intents).
     LaunchedEffect(externalVideoUri) {
         val uri = externalVideoUri ?: return@LaunchedEffect
@@ -224,8 +258,28 @@ fun MobileApp(
             androidx.compose.material3.LocalTextStyle provides WindTypography.bodyLarge
         ) {
         Surface(modifier = Modifier.fillMaxSize(), color = WindColors.CanvasCream) {
-            when {
-                pendingFile != null -> {
+            // WindMotion: derive a single screen key from the various state
+            // conditions so Crossfade has a comparable target. Order matters —
+            // `pendingFile` (player) wins over everything (incl. settings),
+            // matching the previous `when` precedence.
+            val screenKey = when {
+                pendingFile != null -> "player"
+                screen == "addServer" || screen == "editServer" -> "addServer"
+                screen == "settings" -> "settings"
+                activeServer != null -> "serverBrowse"
+                else -> "browser"
+            }
+            androidx.compose.animation.Crossfade(
+                targetState = screenKey,
+                animationSpec = androidx.compose.animation.core.tween(
+                    dev.windplayer.ui.WindMotion.DurMedium,
+                    easing = dev.windplayer.ui.WindMotion.EasingStandard
+                ),
+                label = "screen"
+            ) { key ->
+                when (key) {
+                    "player" -> {
+                        if (pendingFile != null) {
             MobilePlayerScreen(
                 player = player,
                 file = pendingFile!!,
@@ -277,9 +331,10 @@ fun MobileApp(
                     history = HistoryStore.load(context)
                 }
             )
-        }
-        screen == "addServer" || screen == "editServer" -> {
-            AddServerScreen(
+                    }
+                }
+                "addServer" -> {
+                    AddServerScreen(
                 onBack = { screen = "browser"; editingServer = null },
                 onSave = { config ->
                     if (editingServer != null) {
@@ -293,19 +348,20 @@ fun MobileApp(
                 },
                 initialConfig = if (screen == "editServer") editingServer else null
             )
-        }
-        screen == "settings" -> {
-            MobileSettingsScreen(
-                settings = settings,
-                onSettingsChanged = { newSettings ->
-                    settings = newSettings
-                    SettingsHelper.save(context, newSettings)
-                },
-                onBack = { screen = "browser" }
-            )
-        }
-        activeServer != null -> {
-            ServerBrowseScreen(
+                }
+                "settings" -> {
+                    MobileSettingsScreen(
+                        settings = settings,
+                        onSettingsChanged = { newSettings ->
+                            settings = newSettings
+                            SettingsHelper.save(context, newSettings)
+                        },
+                        onBack = { screen = "browser" }
+                    )
+                }
+                "serverBrowse" -> {
+                    if (activeServer != null) {
+                    ServerBrowseScreen(
                 server = activeServer!!,
                 files = serverFiles,
                 currentPath = serverPath,
@@ -361,8 +417,9 @@ fun MobileApp(
                     }
                 }
             )
-        }
-        else -> FileBrowserScreen(
+                    }
+                }
+                "browser" -> FileBrowserScreen(
             onFilePlay = { file, allFiles ->
                 val allVideos = allFiles.filter { it.isVideo() }
                 val idx = allVideos.indexOfFirst { it.path == file.path }
@@ -438,8 +495,9 @@ fun MobileApp(
                 }
             }
         )
+                }
+            }
         }
         }
-    }
     }
 }

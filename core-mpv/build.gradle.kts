@@ -1,11 +1,22 @@
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
-    alias(libs.plugins.android.library)
+    id("com.android.kotlin.multiplatform.library")
 }
 
 kotlin {
     jvm("desktop")
-    androidTarget()
+    android {
+        namespace = "dev.windplayer.core.mpv"
+        compileSdk = 36
+        minSdk = 24
+    }
+
+    // expect/actual classes (used for MpvPlayer) graduated to Beta in Kotlin
+    // 2.x; the warning is informational, not a problem. Pass the flag to
+    // suppress the noise.
+    compilerOptions {
+        freeCompilerArgs.add("-Xexpect-actual-classes")
+    }
 
     sourceSets {
         val commonMain by getting {
@@ -19,13 +30,5 @@ kotlin {
                 implementation(libs.kotlinx.coroutines.core)
             }
         }
-    }
-}
-
-android {
-    namespace = "dev.windplayer.core.mpv"
-    compileSdk = 36
-    defaultConfig {
-        minSdk = 24
     }
 }

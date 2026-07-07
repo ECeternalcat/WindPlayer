@@ -8,6 +8,7 @@ import io.ktor.client.engine.cio.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
+import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.w3c.dom.Node
@@ -122,11 +123,21 @@ class WebdavClient : VfsClient {
         val client = httpClient ?: throw IllegalStateException("Not connected")
         val cfg = config ?: throw IllegalStateException("No config")
         val url = "$baseUrl${normalizePath(remotePath)}"
+        // SEC-3: stream the response body to disk instead of materialising it
+        // in memory. A malicious / compromised WebDAV server (or an accidental
+        // click on a multi-GB file) used to trigger OOM via `response.body<ByteArray>()`.
         val response = client.get(url) {
             header("Authorization", buildBasicAuth(cfg.username, cfg.password))
         }
-        val bytes: ByteArray = response.body()
-        File(localPath).writeBytes(bytes)
+        val channel = response.bodyAsChannel()
+        File(localPath).outputStream().use { out ->
+            val buf = ByteArray(64 * 1024)
+            while (!channel.isClosedForRead) {
+                val n = channel.readAvailable(buf)
+                if (n <= 0) break
+                out.write(buf, 0, n)
+            }
+        }
         LOG.info("downloaded $remotePath -> $localPath")
     }
 

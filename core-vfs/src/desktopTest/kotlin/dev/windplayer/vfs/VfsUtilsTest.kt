@@ -252,4 +252,87 @@ class VfsUtilsTest {
         )
         assertEquals("sftp://example.com/deep/nested/path/file.mkv", url)
     }
+
+    @Test
+    fun `SEC-7 buildUrlWithCredentials encodes space as percent-20 not plus`() {
+        // SEC-7: URLEncoder.encode emits `+` for space (HTML form encoding),
+        // but RFC 3986 userinfo requires `%20`. A password like `my pass`
+        // previously became `my+pass`, which some servers decode as a literal
+        // `+`, breaking auth or matching the wrong account.
+        val url = buildUrlWithCredentials(
+            scheme = "sftp",
+            username = "alice smith",
+            password = "my pass",
+            host = "example.com",
+            port = 22,
+            defaultPort = 22,
+            path = "/file.mkv"
+        )
+        assertEquals("sftp://alice%20smith:my%20pass@example.com/file.mkv", url)
+    }
+
+    @Test
+    fun `SEC-7 buildUrlWithCredentials encodes literal plus as percent-2B`() {
+        // A literal `+` in the password is encoded by URLEncoder as `%2B`,
+        // which is safe under RFC 3986 (sub-delims are allowed unreserved in
+        // userinfo, but the encoded form is universally accepted). The
+        // post-replace of `+` → `%20` does NOT touch `%2B` because URLEncoder
+        // already consumed the literal `+`.
+        val url = buildUrlWithCredentials(
+            scheme = "sftp",
+            username = "user",
+            password = "a+b",
+            host = "example.com",
+            port = 22,
+            defaultPort = 22,
+            path = "/file.mkv"
+        )
+        assertEquals("sftp://user:a%2Bb@example.com/file.mkv", url)
+    }
+
+    // ------------------------------------------------------------------
+    // redactUrl (ARCH-15: security-relevant — guards credential leakage
+    // into logs. Test the variants that may appear in production.)
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `redactUrl strips userinfo from URL with user and password`() {
+        val redacted = redactUrl("sftp://alice:s3cr3t@host.example.com/path/movie.mkv")
+        assertEquals("sftp://host.example.com/path/movie.mkv", redacted)
+    }
+
+    @Test
+    fun `redactUrl strips userinfo with only username`() {
+        val redacted = redactUrl("ftp://anonymous@host/file")
+        assertEquals("ftp://host/file", redacted)
+    }
+
+    @Test
+    fun `redactUrl leaves URL without userinfo unchanged`() {
+        val url = "https://host.example.com/path/file.mkv"
+        assertEquals(url, redactUrl(url))
+    }
+
+    @Test
+    fun `redactUrl passes StreamProxy local URL through unchanged`() {
+        // StreamProxy URLs are the only ones we log verbatim — they contain
+        // no credentials, only a session UUID.
+        val url = "http://127.0.0.1:54321/stream/550e8400-e29b-41d4-a716-446655440000"
+        assertEquals(url, redactUrl(url))
+    }
+
+    @Test
+    fun `redactUrl handles malformed URL gracefully`() {
+        // No `://` — return as-is (defensive).
+        assertEquals("not-a-url", redactUrl("not-a-url"))
+    }
+
+    @Test
+    fun `redactUrl does not mistake path @ for userinfo`() {
+        // `@` in the path portion must not be stripped as userinfo.
+        val url = "https://host.example.com/path/with/@/file.mkv"
+        // The userinfo stripper only looks BEFORE the first `/` after `://`.
+        // The first `/` is right after host, before any `@`, so nothing strips.
+        assertEquals(url, redactUrl(url))
+    }
 }

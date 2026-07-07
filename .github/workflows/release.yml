@@ -5,8 +5,10 @@ name: Release
 #
 # Artifacts produced:
 #   - Android debug APK (unsigned — for sideloading only)
-#   - Desktop distribution ZIP (portable JVM bundle via jpackage; runs on
-#     any OS with JDK 21)
+#   - Desktop distribution ZIP (Compose Desktop's distZip — a portable JVM
+#     bundle of libs + launch scripts; runs on any OS with JDK 21). Not to be
+#     confused with jpackage-produced installers (MSI/Deb) which require
+#     platform-specific tooling and are not built here.
 #
 # What's NOT produced here:
 #   - Signed Android release APK: requires a keystore (set up later)

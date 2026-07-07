@@ -5250,3 +5250,151 @@ scope.launch(Dispatchers.IO) {
 - 截图内容标志接入 screenshot 命令（桌面端）
 - 阶段二：视频/音频/网络分类的 mpv 属性在安卓 MpvRenderView 的启动选项集成
 - 高级分类：mpv 配置目录编辑 / 日志级别 / 自定义快捷键
+
+
+---
+
+## 阶段六十三：本地 ASR + AI 翻译引擎（Android 端）(已完成)
+
+依据 `Documents/AITranslate.md` 架构设计，实现完整的本地语音识别 + LLM 翻译管线，
+自动为无字幕视频生成翻译字幕。Android 端全部完成，桌面端共享层已就绪。
+
+### 1. AAR 引擎集成
+
+- `lib/whisper-android-arm64.aar`（1.5MB）放入 `app-android/libs/`
+- `build.gradle.kts` 添加 `implementation(files("libs/whisper-android.aar"))`
+- AAR 包含：`com.whispercpp.whisper.WhisperContext` + JNI bridge + 5 个 arm64-v8a .so
+- `AndroidManifest.xml` 添加 `tools:overrideLibrary="com.whispercpp"` 处理 minSdk 26 > 24 冲突
+- 新增权限：`FOREGROUND_SERVICE` / `FOREGROUND_SERVICE_DATA_SYNC` / `POST_NOTIFICATIONS`
+
+### 2. 共享领域层（commonMain — 桌面端未来复用）
+
+| 文件 | 职责 |
+|------|------|
+| `translate/TaskState.kt` | sealed interface 状态机：Queued → Transcribing → TranslatingChunk → Completed / Failed |
+| `translate/SubtitleSegment.kt` | 时文分离数据类 + SRT 格式化（ID 锚定，时间戳不发给 LLM）|
+| `translate/TranslationConfig.kt` | 用户配置 + Whisper 模型白名单 |
+| `translate/ChunkingStrategy.kt` | 二维切块（40 行 / 1500 字符）+ JSON payload 构建 |
+| `translate/SubtitleMergeEngine.kt` | 强制对齐合并 + 原文降级 |
+
+### 3. Whisper 模型白名单
+
+| 模型 | 文件名 | 大小 | 说明 |
+|------|--------|------|------|
+| Tiny | `ggml-tiny.bin` | ~75MB | 最快，精度最低 |
+| Base | `ggml-base.bin` | ~142MB | 移动端均衡 |
+| Small q8_0 | `ggml-small-q8_0.bin` | ~244MB | 精度好，体积适中 |
+| Turbo q5_0 | `ggml-large-v3-turbo-q5_0.bin` | ~574MB | 精度最佳 |
+
+模型从 HuggingFace 官方仓库直连下载，支持 Range 断点续传。
+
+### 4. Android 平台层
+
+| 文件 | 职责 |
+|------|------|
+| `WhisperEngine.kt` | AAR 封装：loadModel → transcribe → 输出解析 + 抗幻觉过滤 |
+| `ModelFetcher.kt` | HF 直连下载 + Range 断点续传 |
+| `AudioExtractor.kt` | Headless mpv `ao=pcm` dump 16kHz mono WAV → FloatArray（零 FFmpeg）|
+| `LLMRemoteSource.kt` | OpenAI 兼容 API + 严格 JSON 校验 + ID 映射验证 |
+| `TranslationManager.kt` | 全管线调度器：model → audio → ASR → chunk → LLM → merge → SRT |
+| `TranslateService.kt` | ForegroundService + Notification 保活 |
+| `TranslationConfigHelper.kt` | SharedPreferences 持久化 |
+
+### 5. 完整管线流程
+
+```
+用户点击 🌍 按钮 → TranslateService.start()
+  ↓
+TranslationManager.runPipeline():
+  1. ModelFetcher.ensureModel()        → HF 直连下载/断点续传 Whisper 模型
+  2. WhisperEngine.loadModel()         → 加载 GGML 模型到 native context
+  3. AudioExtractor.extractPcmAudio()  → headless mpv ao=pcm dump → WAV → FloatArray
+  4. WhisperEngine.transcribe()        → ASR 推理 + 抗幻觉过滤 → SubtitleSegment[]
+  5. ChunkingStrategy.chunk()          → 40行/1500字二维切块
+  6. LLMRemoteSource.translateChunk()  → 每个 chunk 发送 OpenAI API 翻译
+  7. SubtitleMergeEngine.merge()       → ID 强制对齐 + 缺失译文原文降级
+  8. 写入 cache/subtitles/wp_hash.srt
+  ↓
+TaskState.Completed → 通知「字幕已生成」→ stopSelf()
+```
+
+### 6. UI 集成
+
+#### 设置页新增 AI 翻译分类
+- GLOBE 图标入口「AI Translation / AI 翻译」
+- Whisper 模型选择器：4 档卡片（Tiny/Base/Small/Turbo），已下载显示 ✓，未下载有 Download 按钮 + 百分比进度
+- LLM 配置区：API Key（密码字段，可切换可见性）+ Base URL + Model + Target Language
+
+#### 播放器新增生成字幕按钮
+- 在可展开面板（Speed / Tracks / Screenshot 旁）新增 GLOBE 图标按钮
+- 点击启动 ForegroundService，前台通知实时显示进度
+
+### 7. 架构关键决策
+
+| 决策 | 依据 |
+|------|------|
+| 领域层放 commonMain | 桌面端未来复用 TaskState / ChunkingStrategy / SubtitleMergeEngine 无需改动 |
+| Whisper 输出用字符串解析 | AAR 的 WhisperLib 是 internal，只有 transcribeData() 返回 String 是 public API |
+| Headless mpv 提取音频 | 不引入 FFmpeg；用独立 mpv 实例 ao=pcm dump 到 WAV |
+| HttpURLConnection 做 LLM 请求 | 只需简单 POST，避免额外 Ktor 引擎配置 |
+| ForegroundService + dataSync type | Android 14+ 强制声明 foregroundServiceType |
+| 时文物理分离 | LLM 永远不接触时间戳，时间轴骨架由本地 SubtitleSegment 维护，LLM 崩溃最坏退化为原文 |
+
+### 8. i18n
+
+新增 ~15 个键（中英双语）：`cat_ai_translate` / `whisper_model` / `llm_api_key` / `llm_base_url` / `llm_model_name` / `target_language` / `generate_subtitles` / `gen_sub_processing` / `gen_sub_ready` / `gen_sub_failed` / `gen_sub_no_api_key` / `model_status_download` / `model_status_downloaded` / `model_status_downloading`
+
+### 编译验证
+
+```
+OK :app-desktop:compileKotlinDesktop   BUILD SUCCESSFUL
+OK :app-android:assembleDebug          BUILD SUCCESSFUL (69.7 MB)
+OK :core-vfs:allTests                  88 tests, 0 failures
+```
+
+### 文件变更总结
+
+```
+新增：
+  app-android/libs/whisper-android.aar                    # Whisper JNI + native libs (arm64-v8a)
+  ui-compose/src/commonMain/.../translate/TaskState.kt
+  ui-compose/src/commonMain/.../translate/SubtitleSegment.kt
+  ui-compose/src/commonMain/.../translate/TranslationConfig.kt
+  ui-compose/src/commonMain/.../translate/ChunkingStrategy.kt
+  ui-compose/src/commonMain/.../translate/SubtitleMergeEngine.kt
+  app-android/src/main/kotlin/.../translate/WhisperEngine.kt
+  app-android/src/main/kotlin/.../translate/ModelFetcher.kt
+  app-android/src/main/kotlin/.../translate/AudioExtractor.kt
+  app-android/src/main/kotlin/.../translate/LLMRemoteSource.kt
+  app-android/src/main/kotlin/.../translate/TranslationManager.kt
+  app-android/src/main/kotlin/.../translate/TranslateService.kt
+  app-android/src/main/kotlin/.../translate/TranslationConfigHelper.kt
+
+修改：
+  app-android/build.gradle.kts                              # +whisper AAR 依赖
+  app-android/src/main/AndroidManifest.xml                  # +权限 +service 注册 +overrideLibrary
+  app-android/.../MobileSettingsScreen.kt                   # +AI_TRANSLATE 分类 +模型选择器 +LLM 配置
+  app-android/.../MobilePlayerScreen.kt                     # +生成字幕 🌍 按钮
+  ui-compose/src/commonMain/.../I18n.kt                     # +15 键（中英）
+```
+
+### 已知限制（后续迭代）
+
+1. 本地 SAF 文件：`content://` URI 在 headless mpv 中可能需要额外 PFD 处理
+2. 桌面端：共享层已就绪，需 `.dll`/`.so` 绑定（留作下一阶段）
+3. Chunk 断点续传：JSON 碎片持久化尚未实现（当前仅内存级）
+4. 字幕自动挂载：`autoMountSubtitle` 已定义但 `sub-add` 挂载逻辑尚未接入
+5. Whisper 输出解析：依赖 `transcribeData()` 文本格式，不同版本可能微调
+
+---
+
+## 第六十三阶段状态总结
+
+**已完成**：本地 ASR（Whisper AAR）+ AI 翻译（OpenAI 兼容 API）完整管线、ForegroundService 保活、
+模型管理（HF 直连下载 + 断点续传）、设置页 AI 翻译配置 UI、播放器生成字幕按钮
+
+**下一步**：
+- 桌面端 Whisper .dll/.so 集成（共享层已就绪）
+- Chunk 级断点续传持久化（JSON 碎片）
+- 字幕生成后自动 `sub-add` 挂载到 mpv
+- 本地 SAF `content://` URI 在 headless mpv 中的 PFD 转换

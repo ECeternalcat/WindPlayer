@@ -19,6 +19,10 @@ actual class MpvPlayer actual constructor() {
     actual val events: SharedFlow<MpvEvent> = _events
     private var created = false
     private var initialized = false
+    // CON-4: read inside the JNI event-thread observer callback (event()),
+    // reset by dispose() on the caller thread. Marked @Volatile so the
+    // disposing thread's write is visible to the event thread (JMM).
+    @Volatile
     private var fileLoadedBefore = false
     // H9: guard prevents duplicate observer registration when MobilePlayerScreen
     // re-enters composition (Browser→Player→Browser→Player). Without it, each
@@ -122,11 +126,26 @@ actual class MpvPlayer actual constructor() {
     }
 
     fun attachSurface(surface: Surface) {
-        synchronized(lock) { if (created) { MPVLib.attachSurface(surface); Log.i(TAG, "Surface attached") } }
+        // CON-8: log failures (was no try/catch — a flaky attach silently
+        // aborted init with only a generic "Player init error" upstream).
+        synchronized(lock) {
+            if (created) try {
+                MPVLib.attachSurface(surface); Log.i(TAG, "Surface attached")
+            } catch (e: Exception) {
+                Log.w(TAG, "attachSurface failed", e)
+            }
+        }
     }
 
     fun detachSurface() {
-        synchronized(lock) { if (created) try { MPVLib.detachSurface() } catch (_: Exception) {} }
+        // CON-8: log failures (was silent swallow, inconsistent with M3 rule).
+        synchronized(lock) {
+            if (created) try {
+                MPVLib.detachSurface()
+            } catch (e: Exception) {
+                Log.w(TAG, "detachSurface failed", e)
+            }
+        }
     }
 
     actual fun initialize() {
