@@ -25,6 +25,8 @@ import dev.windplayer.WindRadius
 import dev.windplayer.Phosphor
 import dev.windplayer.PhosphorIcon
 import dev.windplayer.ui.I18n
+import dev.windplayer.ui.SubtitleDisplayMode
+import dev.windplayer.SettingsHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -126,6 +128,47 @@ fun TranslateChoiceSheet(
                         }
                     }
 
+                    // ---- Display mode selector (Dual-Subtitle-Plan Step 3) ----
+                    // Lets the user pick how bilingual subtitles should appear
+                    // BEFORE starting generation, so the mount logic in
+                    // MobilePlayerScreen uses the right mode.
+                    Spacer(Modifier.height(12.dp))
+                    Text(I18n.get("sub_display_mode"), color = WindColors.Slate, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(4.dp))
+                    var displayMode by remember {
+                        mutableStateOf(SettingsHelper.load(context).subtitleDisplayMode)
+                    }
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        DisplayModeChip(
+                            Modifier.weight(1f),
+                            I18n.get("sub_mode_translated"),
+                            displayMode == SubtitleDisplayMode.TRANSLATED_ONLY
+                        ) {
+                            displayMode = SubtitleDisplayMode.TRANSLATED_ONLY
+                            saveDisplayMode(context, displayMode)
+                        }
+                        DisplayModeChip(
+                            Modifier.weight(1f),
+                            I18n.get("sub_mode_separated"),
+                            displayMode == SubtitleDisplayMode.DUAL_SEPARATED
+                        ) {
+                            displayMode = SubtitleDisplayMode.DUAL_SEPARATED
+                            saveDisplayMode(context, displayMode)
+                        }
+                        DisplayModeChip(
+                            Modifier.weight(1f),
+                            I18n.get("sub_mode_stacked"),
+                            displayMode == SubtitleDisplayMode.DUAL_STACKED
+                        ) {
+                            displayMode = SubtitleDisplayMode.DUAL_STACKED
+                            saveDisplayMode(context, displayMode)
+                        }
+                    }
+                    Spacer(Modifier.height(16.dp))
+
                     // Two buttons.
                     if (isLandscape) {
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -187,6 +230,40 @@ fun TranslateChoiceSheet(
             }
         }
     }
+}
+
+// ------------------------------------------------------------------
+// Display mode chip + saver
+// ------------------------------------------------------------------
+
+@Composable
+private fun DisplayModeChip(
+    modifier: Modifier = Modifier,
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = modifier,
+        onClick = onClick,
+        shape = WindRadius.Pill,
+        color = if (selected) WindColors.Ink else WindColors.White
+    ) {
+        Text(
+            label,
+            color = if (selected) WindColors.CanvasCream else WindColors.Slate,
+            fontSize = 11.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            maxLines = 1,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp).fillMaxWidth()
+        )
+    }
+}
+
+private fun saveDisplayMode(context: android.content.Context, mode: SubtitleDisplayMode) {
+    val settings = SettingsHelper.load(context)
+    SettingsHelper.save(context, settings.copy(subtitleDisplayMode = mode))
 }
 
 // ------------------------------------------------------------------

@@ -30,6 +30,8 @@ import dev.windplayer.translate.TranslationConfig
 import dev.windplayer.translate.TranslationConfigHelper
 import dev.windplayer.translate.WhisperModelWhiteList
 import dev.windplayer.translate.ModelFetcher
+import dev.windplayer.translate.SubtitleManager
+import dev.windplayer.vfs.formatFileSize
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -233,6 +235,13 @@ private fun SubtitleCategory(s: PlayerSettings, onChange: (PlayerSettings) -> Un
     DropdownRow(I18n.get("sub_align"),
         listOf("bottom" to I18n.get("align_bottom"), "center" to I18n.get("align_center"), "top" to I18n.get("align_top")),
         s.subAlignY) { onChange(s.copy(subAlignY = it)) }
+    DropdownRow(I18n.get("sub_display_mode"),
+        listOf(
+            dev.windplayer.ui.SubtitleDisplayMode.TRANSLATED_ONLY.name to I18n.get("sub_mode_translated"),
+            dev.windplayer.ui.SubtitleDisplayMode.DUAL_SEPARATED.name to I18n.get("sub_mode_separated"),
+            dev.windplayer.ui.SubtitleDisplayMode.DUAL_STACKED.name to I18n.get("sub_mode_stacked")
+        ),
+        s.subtitleDisplayMode.name) { onChange(s.copy(subtitleDisplayMode = dev.windplayer.ui.SubtitleDisplayMode.valueOf(it))) }
 }
 
 @Composable
@@ -480,6 +489,8 @@ private fun AiTranslateCategory() {
     // Bump to force recomposition after model delete (file system change
     // isn't automatically observed by Compose).
     var modelRefreshKey by remember { mutableStateOf(0) }
+    // Bump to force recomposition after subtitle delete.
+    var refreshKey by remember { mutableStateOf(0) }
     val isDownloaded = remember(modelRefreshKey) { fetcher.isModelPresent(config.whisperModel) }
     var deleteTarget by remember { mutableStateOf<WhisperModelWhiteList.ModelInfo?>(null) }
 
@@ -683,6 +694,84 @@ private fun AiTranslateCategory() {
             I18n.get("gen_sub_no_api_key"),
             color = WindColors.Slate, fontSize = 12.sp
         )
+    }
+
+    // ---- Generated subtitle management ----
+    Spacer(Modifier.height(20.dp))
+    Text(I18n.get("gen_sub_manage"), color = WindColors.Slate, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+
+    val subtitles = remember(refreshKey) { SubtitleManager.list(context) }
+    val totalSize = remember(refreshKey) { SubtitleManager.totalSize(context) }
+
+    if (subtitles.isEmpty()) {
+        Spacer(Modifier.height(6.dp))
+        Text(I18n.get("gen_sub_empty"), color = WindColors.DustTaupe, fontSize = 13.sp)
+    } else {
+        subtitles.forEach { entry ->
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                color = WindColors.White,
+                shape = WindRadius.Chip
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    PhosphorIcon(
+                        Phosphor.SUBTITLES, null,
+                        tint = WindColors.ClayBrown, size = 16.dp
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            entry.name,
+                            color = WindColors.Ink, fontSize = 13.sp,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                        )
+                        Text(
+                            formatFileSize(entry.sizeBytes),
+                            color = WindColors.Slate, fontSize = 11.sp
+                        )
+                    }
+                    Surface(
+                        onClick = {
+                            if (SubtitleManager.delete(context, entry.name)) {
+                                refreshKey++
+                                Toast.makeText(context, I18n.get("toast_deleted"), Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        color = Color.Transparent,
+                        shape = WindRadius.Pill
+                    ) {
+                        PhosphorIcon(
+                            Phosphor.X, "Delete",
+                            tint = WindColors.DustTaupe, size = 16.dp
+                        )
+                    }
+                }
+            }
+        }
+
+        // Total size + clear-all.
+        Spacer(Modifier.height(6.dp))
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "${I18n.get("gen_sub_total")}: ${formatFileSize(totalSize)}",
+                color = WindColors.Slate, fontSize = 12.sp
+            )
+            TextButton(onClick = {
+                val n = SubtitleManager.deleteAll(context)
+                refreshKey++
+                Toast.makeText(context, "$n ${I18n.get("toast_deleted")}", Toast.LENGTH_SHORT).show()
+            }) {
+                Text(I18n.get("gen_sub_clear_all"), color = WindColors.SignalOrange, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            }
+        }
     }
 }
 

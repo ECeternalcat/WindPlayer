@@ -209,7 +209,15 @@ val WindTypographyRaw = Typography(
  * Sofia Sans (Google Fonts, OFL) — DESIGN.md's recommended open-source stand-in
  * for the proprietary MarkForMC. Static 400/500/700 instances loaded from the
  * `resources/fonts/` classpath.
+ *
+ * The `Font(String, FontWeight)` constructor is deprecated in CMP 1.11 (the
+ * recommended path is `Font(Res.font.xxx)` via Compose resources). We keep it
+ * here because the Compose-resources `Font(FontResource)` overload is
+ * `@Composable`, which would force the entire `WindTypography`/`SofiaSansFamily`
+ * graph to become composable — a much larger refactor. The classpath path
+ * works perfectly on desktop JVM.
  */
+@Suppress("DEPRECATION")
 val SofiaSansFamily = FontFamily(
     Font("fonts/SofiaSans-Regular.ttf", FontWeight.Normal),
     Font("fonts/SofiaSans-Medium.ttf", FontWeight.Medium),

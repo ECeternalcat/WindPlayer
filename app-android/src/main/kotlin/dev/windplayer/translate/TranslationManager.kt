@@ -167,7 +167,9 @@ class TranslationManager(
                 // Source-only mode (user chose "source language" or no API key).
                 Log.w(TAG, "Skipping LLM translation — writing original-language subtitles only")
                 val srtFile = writeSrt(segments, sourceUrl)
-                TranslateService.pendingSubtitleMount.value = srtFile.absolutePath
+                TranslateService.pendingSubtitleMount.value = TranslateService.SubtitleMountRequest(
+                    primaryPath = srtFile.absolutePath
+                )
                 _state.value = TaskState.Completed(srtFile.absolutePath)
                 return
             }
@@ -217,16 +219,35 @@ class TranslationManager(
             val mergeResult = SubtitleMergeEngine.merge(segments, allTranslations, detectedLanguage)
             Log.i(TAG, "Merge complete: ${mergeResult.segments.size} segments, ${mergeResult.untranslatedCount} untranslated")
 
-            // 8. Write SRT file.
-            val srtFile = writeSrt(mergeResult.segments, sourceUrl)
+            // 8. Write SRT files. Translation mode produces three files so
+            // the player can choose how to display them (Dual-Subtitle-Plan §4):
+            //   - wp_xx.srt        translated text only
+            //   - wp_xx_source.srt  original text only
+            //   - wp_xx_dual.srt    translated + original stacked per cue
+            val srtDir = File(context.cacheDir, "subtitles").apply { mkdirs() }
+            val hashHex = hashSourceUrl(sourceUrl)
 
-            // §7 Hot Reload: publish the SRT path so the player screen can
-            // auto-mount it via `sub-add`. The player collects this flow and
-            // mounts silently — no user action needed.
-            TranslateService.pendingSubtitleMount.value = srtFile.absolutePath
+            val translatedFile = File(srtDir, "wp_$hashHex.srt").also {
+                it.writeText(SubtitleMergeEngine.toSrtContent(mergeResult.segments), Charsets.UTF_8)
+            }
+            val sourceFile = File(srtDir, "wp_${hashHex}_source.srt").also {
+                it.writeText(SubtitleMergeEngine.toSourceSrtContent(mergeResult.segments), Charsets.UTF_8)
+            }
+            val dualFile = File(srtDir, "wp_${hashHex}_dual.srt").also {
+                it.writeText(SubtitleMergeEngine.toDualSrtContent(mergeResult.segments), Charsets.UTF_8)
+            }
+            Log.i(TAG, "Written: ${translatedFile.name}, ${sourceFile.name}, ${dualFile.name}")
 
-            _state.value = TaskState.Completed(srtFile.absolutePath)
-            Log.i(TAG, "Pipeline complete: ${srtFile.absolutePath}")
+            // Publish all three paths so MobilePlayerScreen can mount the
+            // appropriate one(s) based on the user's display-mode setting.
+            TranslateService.pendingSubtitleMount.value = TranslateService.SubtitleMountRequest(
+                primaryPath = translatedFile.absolutePath,
+                secondaryPath = sourceFile.absolutePath,
+                dualPath = dualFile.absolutePath
+            )
+
+            _state.value = TaskState.Completed(translatedFile.absolutePath)
+            Log.i(TAG, "Pipeline complete: ${translatedFile.absolutePath}")
 
         } catch (e: kotlinx.coroutines.CancellationException) {
             _state.value = TaskState.Failed.Cancelled()
@@ -244,21 +265,25 @@ class TranslationManager(
     }
 
     /**
-     * Write the SRT file to the app cache directory.
+     * Write a single SRT file to the app cache directory.
+     * Used for source-only mode (no translation).
      * BUG-22: SHA-256 of the source URL for collision-free dedup.
-     * BUG-38: removed unused `translated` parameter.
      */
     private fun writeSrt(
         segments: List<SubtitleSegment>,
         sourceUrl: String
     ): File {
         val srtDir = File(context.cacheDir, "subtitles").apply { mkdirs() }
-        val md = java.security.MessageDigest.getInstance("SHA-256")
-        val hashBytes = md.digest(sourceUrl.toByteArray(Charsets.UTF_8))
-        val hashHex = hashBytes.take(8).joinToString("") { "%02x".format(it) }
-        val srtFile = File(srtDir, "wp_$hashHex.srt")
+        val srtFile = File(srtDir, "wp_${hashSourceUrl(sourceUrl)}.srt")
         srtFile.writeText(SubtitleMergeEngine.toSrtContent(segments), Charsets.UTF_8)
         return srtFile
+    }
+
+    /** 8-hex-char SHA-256 prefix of [sourceUrl], used as the subtitle file key. */
+    private fun hashSourceUrl(sourceUrl: String): String {
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        val hashBytes = md.digest(sourceUrl.toByteArray(Charsets.UTF_8))
+        return hashBytes.take(8).joinToString("") { "%02x".format(it) }
     }
 
     companion object {

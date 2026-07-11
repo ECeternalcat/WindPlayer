@@ -57,17 +57,58 @@ object SubtitleMergeEngine {
     /**
      * Write the merged segments to a .srt file string.
      * Re-numbers IDs sequentially (1-based per SRT convention).
+     * Uses [SubtitleSegment.displayText] (translated text if available,
+     * otherwise original).
      */
     fun toSrtContent(segments: List<SubtitleSegment>): String {
+        return renderSrt(segments) { it.displayText }
+    }
+
+    /**
+     * Write segments using **only** [SubtitleSegment.originalText],
+     * ignoring any translation. Used for the source-language SRT file
+     * that accompanies a translated SRT in dual-subtitle mode.
+     */
+    fun toSourceSrtContent(segments: List<SubtitleSegment>): String {
+        return renderSrt(segments) { it.originalText }
+    }
+
+    /**
+     * Write segments as a **two-line stacked** SRT: translated text on the
+     * first line, original text on the second line. If a segment has no
+     * translation, only the original line is emitted.
+     *
+     * This produces a single SRT file that mpv renders as two lines stacked
+     * at the bottom of the screen — the "dual stacked" display mode from
+     * [Documents/Dual-Subtitle-Plan.md] §3.
+     */
+    fun toDualSrtContent(segments: List<SubtitleSegment>): String {
+        return renderSrt(segments) { seg ->
+            buildString {
+                val translated = seg.translatedText
+                if (!translated.isNullOrBlank()) {
+                    append(translated)
+                    append("\n")
+                }
+                append(seg.originalText)
+            }
+        }
+    }
+
+    /**
+     * Internal: render any segment-to-text mapping as a valid SRT file.
+     */
+    private inline fun renderSrt(
+        segments: List<SubtitleSegment>,
+        textFn: (SubtitleSegment) -> String
+    ): String {
         val sb = StringBuilder()
         segments.forEachIndexed { index, seg ->
             sb.append(index + 1).append("\n")
             sb.append(seg.startTimeFormatted).append(" --> ").append(seg.endTimeFormatted).append("\n")
-            sb.append(seg.displayText).append("\n")
+            sb.append(textFn(seg)).append("\n")
             sb.append("\n")
         }
-        // BUG-37: trim trailing blank lines — some strict SRT parsers warn
-        // on the extra empty block at the end.
         return sb.toString().trimEnd('\n') + "\n"
     }
 }

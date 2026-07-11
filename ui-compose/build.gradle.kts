@@ -20,19 +20,18 @@ kotlin {
                 implementation(compose.runtime)
                 @Suppress("DEPRECATION")
                 implementation(compose.ui)
+                // Compose resources library — drives the generated Res accessors
+                // used by desktopMain for SVG icons + fonts. Documented location
+                // for this dependency is commonMain so the auto Res class
+                // generation triggers.
+                @Suppress("DEPRECATION")
+                implementation(compose.components.resources)
             }
         }
         val desktopMain by getting {
             dependencies {
                 implementation(project(":core-mpv"))
                 implementation(project(":core-vfs"))
-                // compose.desktop.currentOs lives ONLY in app-desktop — putting
-                // it in a library pins Skia/LWJGL natives to the build-host OS,
-                // making the library non-portable across CI runners.
-                // compose.{runtime,foundation,material3,ui} accessors are
-                // deprecated in CMP 1.11 (string forms don't carry the
-                // per-artifact version matrix). Suppressed until CMP ships a
-                // non-deprecated replacement.
                 @Suppress("DEPRECATION")
                 implementation(compose.runtime)
                 @Suppress("DEPRECATION")
@@ -62,4 +61,12 @@ kotlin {
             }
         }
     }
+}
+
+// Generate the Res accessors class as `public` in a fixed package so callers
+// (Icons.kt, WindTheme.kt) can import it. Default is `internal` under a
+// generated package which is awkward to reference across modules.
+compose.resources {
+    publicResClass = true
+    packageOfResClass = "dev.windplayer.ui.resources"
 }

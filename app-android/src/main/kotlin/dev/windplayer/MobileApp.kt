@@ -288,6 +288,7 @@ fun MobileApp(
                 localSiblings = localSiblings,
                 currentIndex = playIndex,
                 autoPlayNext = settings.autoPlayNext,
+                subtitleDisplayMode = settings.subtitleDisplayMode,
                 resumePosition = resumePosition,
                 resumeSid = resumeSid,
                 resumeAid = resumeAid,

@@ -50,20 +50,32 @@ class WhisperEngine {
      * applied. Each segment's [SubtitleSegment.startMs] / [endMs] are in
      * milliseconds (converted from whisper's 10ms tick units per §8.2).
      *
-     * [translateMode] = true tells Whisper to translate to English instead of
-     * transcribing the source language. We default to false — our LLM pipeline
-     * does the translation, not Whisper.
+     * Whisper's English-translation mode is intentionally NOT exposed:
+     * our LLM pipeline does the translation, and the underlying whisper native
+     * call (fullTranscribe) doesn't take a translate flag — translation is
+     * decided by the model + whisper.cpp build config.
      */
     suspend fun transcribe(
-        audioData: FloatArray,
-        translateMode: Boolean = false
+        audioData: FloatArray
     ): Result<List<SubtitleSegment>> = withContext(Dispatchers.Default) {
         val ctx = context ?: return@withContext Result.failure(
             IllegalStateException("Whisper model not loaded")
         )
         try {
             Log.i(TAG, "Transcribing ${audioData.size} samples (${audioData.size / 16000.0}s)")
-            val raw = ctx.transcribeData(audioData, translateMode)
+            // The second boolean arg to `transcribeData` controls whether the
+            // native side emits "[HH:mm:ss,mmm --> HH:mm:ss,mmm]:" timestamps.
+            // Without it the output is bare text with no timing, and
+            // [parseTranscriptionOutput] returns 0 segments (BUG-WHISPER-1).
+            // The old code named this arg `translateMode` and defaulted it to
+            // false, which silently disabled timestamps — so transcription
+            // always produced 0 segments on real videos.
+            val raw = ctx.transcribeData(audioData, /* printTimestamp = */ true)
+            // Log the raw output so future format drift in whisper.cpp is
+            // diagnosable from logcat without a new build.
+            Log.i(TAG, "Raw whisper output (${raw.length} chars):")
+            raw.lineSequence().take(5).forEach { Log.i(TAG, "  | $it") }
+            if (raw.length > 500) Log.i(TAG, "  ... (${raw.lineSequence().count() - 5} more lines)")
             val segments = parseTranscriptionOutput(raw)
             Log.i(TAG, "Parsed ${segments.size} segments (after anti-hallucination filter)")
             Result.success(segments)
@@ -97,11 +109,22 @@ class WhisperEngine {
     /**
      * Parse whisper.cpp's formatted output string into structured segments.
      *
-     * Whisper output format (from `WhisperContext.transcribeData`):
+     * Whisper output format (verified by decompiling whisper-android.aar's
+     * `WhisperContext.transcribeData`):
      * ```
-     * 0  [00:00:00.000 --> 00:00:04.000]  Hello world.
-     * 1  [00:00:04.000 --> 00:00:08.000]  This is a test.
+     * [00:00:00,000 --> 00:00:04,000]:Hello world.
+     * [00:00:04,000 --> 00:00:08,000]:This is a test.
      * ```
+     *
+     * Key facts the previous parser got wrong (BUG-WHISPER-2):
+     *  - whisper.cpp's `toTimestamp` uses `,` (comma) as the millisecond
+     *    separator by default, not `.`. The old regex required `\.` and so
+     *    matched zero lines.
+     *  - There is no segment index prefix (the old regex allowed it but it's
+     *    never present).
+     *  - The closing `]` is immediately followed by `:` then the text — no
+     *    space. The old regex's `\]\s*` left the `:` as a stale prefix on
+     *    every caption.
      *
      * Anti-hallucination filter (§8.2):
      * - Strip text inside `[…]` and `(…)` (e.g. `[MUSIC]`, `(silence)`).
@@ -112,13 +135,15 @@ class WhisperEngine {
         val segments = mutableListOf<SubtitleSegment>()
         var lastText = ""
 
-        // Regex: optional index, [start --> end], text
-        // Whisper uses "." before milliseconds (not "," like SRT).
+        // Regex: [start --> end]:text
+        // - Timestamp separator may be `.` or `,` (whisper.cpp build-dependent)
+        // - `:` after `]` is the whisper.cpp convention; tolerate its absence
+        //   so the regex also matches older `[00:00:00.000 --> ...]  text` form
         val lineRegex = Regex(
-            // optional segment index + whitespace
-            """^\d*\s*""" +
-            // [HH:mm:ss.mmm --> HH:mm:ss.mmm]
-            """\[(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})\.(\d{3})\]\s*""" +
+            // [HH:mm:ss[.,]mmm --> HH:mm:ss[.,]mmm]
+            """\[(\d{2}):(\d{2}):(\d{2})[.,](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[.,](\d{3})\]""" +
+            // optional `:` separator (whisper.cpp emits it) + any whitespace
+            """:?\s*""" +
             // rest of line = text
             """(.*)$"""
         )
@@ -159,7 +184,83 @@ class WhisperEngine {
             lastText = cleaned
         }
 
-        return segments
+        // Post-process segment timings to fix two common Whisper issues:
+        // 1. VAD detects speech slightly before actual onset → subtitles appear
+        //    a few frames too early.
+        // 2. Segments spanning silence (endMs extends past speech into the gap
+        //    before the next segment) → text from later appears to overlap with
+        //    the tail of earlier speech.
+        return fixSegmentTimings(segments)
+    }
+
+    /**
+     * Heuristic timing post-processing for Whisper segments.
+     *
+     * Two fixes:
+     *
+     * **A. Start-time offset** (`VAD_OFFSET_MS`):
+     * Whisper's VAD triggers a few frames before actual speech onset.
+     * Shifting [SubtitleSegment.startMs] forward by 150 ms aligns subtitles
+     * closer to the first audible syllable. The effect is subtle (≈3-4 frames
+     * at 24 fps) but noticeable to users who watch lips/scene cuts closely.
+     *
+     * **B. Silence-spanning trim**:
+     * Whisper often extends a segment's `endMs` across intervening silence to
+     * the start of the next segment (instead of clamping it to where speech
+     * actually stops). The result: a 5-second speech followed by 10 seconds
+     * of silence gets a single segment `[00:00 → 00:15]` — text "floats" past
+     * the speaker's actual last word.
+     *
+     * Fix: estimate the plausible speech duration from text length (CJK ~3.5
+     * chars/sec, Latin ~2.5 words/sec), and if `actualDuration > estimated × 3`,
+     * clamp `endMs` to `startMs + estimated + buffer`.
+     *
+     * The ×3 threshold is deliberately conservative — only segments that are
+     * grossly too long are touched. Normal segments with accurate Whisper
+     * timestamps pass through unchanged.
+     */
+    private fun fixSegmentTimings(segments: List<SubtitleSegment>): List<SubtitleSegment> {
+        if (segments.isEmpty()) return segments
+
+        val vadOffsetMs = 150L        // compensate VAD early-detection
+        val minDurationMs = 1500L     // minimum caption display time
+        val cjkCharsPerSec = 3.5      // conservative CJK reading speed
+        val latinWordsPerSec = 2.5    // conservative English reading speed
+        val trimBufferMs = 1000L      // extra slack when clamping endMs
+
+        val fixed = segments.map { seg ->
+            val newStart = seg.startMs + vadOffsetMs
+
+            // Estimate plausible speech duration from text content.
+            val text = seg.originalText
+            val cjkCount = text.count { it.code in 0x4E00..0x9FFF }
+            val latinWordCount = text.split(Regex("[\\s\\p{Punct}]+"))
+                .count { it.isNotEmpty() && it.any { c -> c.code < 0x4E00 } }
+            val estimatedMs = maxOf(
+                minDurationMs,
+                (cjkCount / cjkCharsPerSec * 1000).toLong(),
+                (latinWordCount / latinWordsPerSec * 1000).toLong()
+            )
+
+            // Only trim if actual duration is grossly larger than estimate.
+            val actualDuration = seg.endMs - seg.startMs
+            val newEnd = if (actualDuration > estimatedMs * 3) {
+                newStart + estimatedMs + trimBufferMs
+            } else {
+                seg.endMs
+            }
+
+            seg.copy(startMs = newStart, endMs = maxOf(newEnd, newStart + minDurationMs))
+        }.toMutableList()
+
+        // Ensure no overlap: each segment starts at least 50ms after previous ends.
+        for (i in 1 until fixed.size) {
+            if (fixed[i].startMs < fixed[i - 1].endMs + 50) {
+                fixed[i] = fixed[i].copy(startMs = fixed[i - 1].endMs + 50)
+            }
+        }
+
+        return fixed
     }
 
     private fun toMs(h: String, m: String, s: String, ms: String): Long {

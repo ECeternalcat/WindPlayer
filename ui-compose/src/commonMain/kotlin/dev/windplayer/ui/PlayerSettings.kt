@@ -4,6 +4,22 @@ enum class ThemeMode { LIGHT, DARK, SYSTEM }
 
 enum class AccentColor { WINDPLAYER, AUTO }
 
+/**
+ * Controls how AI-generated bilingual subtitles are displayed.
+ *
+ * - [TRANSLATED_ONLY]: single subtitle track, translated text (or source
+ *   text if no translation).
+ * - [DUAL_SEPARATED]: two tracks — translated on bottom (`sid`), original
+ *   on top (`secondary-sid`). Uses mpv's native secondary subtitle feature.
+ * - [DUAL_STACKED]: single track with two lines per cue (translated + original
+ *   stacked). A pre-generated `wp_xx_dual.srt` file is used.
+ */
+enum class SubtitleDisplayMode {
+    TRANSLATED_ONLY,
+    DUAL_SEPARATED,
+    DUAL_STACKED
+}
+
 data class PlayerSettings(
     // --- 现有 ---
     val defaultVolume: Int = 100,
@@ -35,6 +51,7 @@ data class PlayerSettings(
     val subBackColor: String = "#00000000",
     val subFontFamily: String = "sans-serif",
     val subAlignY: String = "bottom",
+    val subtitleDisplayMode: SubtitleDisplayMode = SubtitleDisplayMode.DUAL_SEPARATED,
 
     // --- 网络 ---
     val cacheSize: Int = 150,

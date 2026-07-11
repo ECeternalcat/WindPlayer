@@ -37,6 +37,29 @@ import kotlinx.coroutines.launch
  */
 class TranslateService : Service() {
 
+    /**
+     * Request to mount generated subtitle(s) into mpv. Published by
+     * [TranslationManager] when the pipeline finishes; consumed by
+     * [MobilePlayerScreen] which calls `sub-add` + optionally
+     * `secondary-sid`.
+     *
+     * - [primaryPath]: the main subtitle file (translated text, or
+     *   source text if translate was disabled).
+     * - [secondaryPath]: the source-language SRT for dual-separated
+     *   display (translated bottom + original top). `null` when only
+     *   source mode was used (no translation).
+     * - [dualPath]: a pre-stacked bilingual SRT (translated line +
+     *   original line per cue) for dual-stacked display. `null` when
+     *   only source mode was used.
+     *
+     * See [Documents/Dual-Subtitle-Plan.md] §4.1.
+     */
+    data class SubtitleMountRequest(
+        val primaryPath: String,
+        val secondaryPath: String? = null,
+        val dualPath: String? = null
+    )
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var stateJob: Job? = null
     private var translationManager: TranslationManager? = null
@@ -52,12 +75,11 @@ class TranslateService : Service() {
         const val EXTRA_TRACK_INDEX = "track_index"
 
         /**
-         * §7 Hot Reload: when the pipeline completes, the generated SRT path
-         * is published here. MobilePlayerScreen collects this flow and calls
-         * `sub-add` to mount the subtitle into mpv — silent, no user action
-         * needed.
+         * §7 Hot Reload: when the pipeline completes, the generated SRT
+         * path(s) are published here. MobilePlayerScreen collects this flow
+         * and calls `sub-add` to mount subtitles into mpv.
          */
-        val pendingSubtitleMount = MutableStateFlow<String?>(null)
+        val pendingSubtitleMount = MutableStateFlow<SubtitleMountRequest?>(null)
 
         /**
          * Global observable task state — any UI (player, file browser) can

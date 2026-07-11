@@ -3,6 +3,7 @@ package dev.windplayer
 import android.content.Context
 import dev.windplayer.ui.AccentColor
 import dev.windplayer.ui.PlayerSettings
+import dev.windplayer.ui.SubtitleDisplayMode
 import dev.windplayer.ui.ThemeMode
 
 object SettingsHelper {
@@ -36,6 +37,9 @@ object SettingsHelper {
             subBackColor = p.getString("subBackColor", "#00000000") ?: "#00000000",
             subFontFamily = p.getString("subFontFamily", "sans-serif") ?: "sans-serif",
             subAlignY = p.getString("subAlignY", "bottom") ?: "bottom",
+            subtitleDisplayMode = runCatching {
+                SubtitleDisplayMode.valueOf(p.getString("subtitleDisplayMode", SubtitleDisplayMode.DUAL_SEPARATED.name) ?: SubtitleDisplayMode.DUAL_SEPARATED.name)
+            }.getOrDefault(SubtitleDisplayMode.DUAL_SEPARATED),
             cacheSize = p.getInt("cacheSize", 150),
             userAgent = p.getString("userAgent", "") ?: "",
             screenshotFormat = p.getString("screenshotFormat", "png") ?: "png",
@@ -67,6 +71,7 @@ object SettingsHelper {
             putString("subBackColor", settings.subBackColor)
             putString("subFontFamily", settings.subFontFamily)
             putString("subAlignY", settings.subAlignY)
+            putString("subtitleDisplayMode", settings.subtitleDisplayMode.name)
             putInt("cacheSize", settings.cacheSize)
             putString("userAgent", settings.userAgent)
             putString("screenshotFormat", settings.screenshotFormat)

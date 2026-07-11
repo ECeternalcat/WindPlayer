@@ -70,6 +70,7 @@ fun MobilePlayerScreen(
     localSiblings: List<FileNode> = emptyList(),
     currentIndex: Int = 0,
     autoPlayNext: Boolean = false,
+    subtitleDisplayMode: dev.windplayer.ui.SubtitleDisplayMode = dev.windplayer.ui.SubtitleDisplayMode.DUAL_SEPARATED,
     onFilePlayed: (FileNode) -> Unit = {},
     resumePosition: Double = 0.0,
     resumeSid: String? = null,
@@ -540,22 +541,62 @@ fun MobilePlayerScreen(
     }
 
     // §7 Hot Reload: observe the subtitle-mount bus. When the translation
-    // pipeline completes (foreground service), the SRT path is published here.
-    // We mount it into mpv via `sub-add` so the user sees the subtitle
+    // pipeline completes (foreground service), the SRT paths are published
+    // here. We mount them into mpv via `sub-add` so the user sees subtitles
     // immediately without any manual action.
-    // BUG-4: key on fileLoaded so the collector restarts when playback becomes
-    // ready — if the translation completes while the player is reloading, the
-    // StateFlow value persists and is picked up on the next composition.
+    //
+    // BUG-MOUNT-1: the old code read `pendingSubtitleMount.value` once inside
+    // `LaunchedEffect(fileLoaded)`. Because that effect only re-runs when
+    // `fileLoaded` *changes*, a value published while the same file is still
+    // loaded was silently ignored. Fix: use `collect` so any future emission
+    // is observed, not just the value at effect-start time.
+    //
+    // Step 1 (this block): mount only the primary SRT. The request may also
+    // carry secondaryPath (source SRT) and dualPath (stacked SRT) for
+    // dual-subtitle display — those are consumed in Step 2 once the
+    // display-mode UI is in place.
     LaunchedEffect(fileLoaded) {
-        val path = dev.windplayer.translate.TranslateService.pendingSubtitleMount.value
-        if (path != null) {
+        if (!fileLoaded) return@LaunchedEffect
+        Log.i("MobilePlayerScreen", "Subtitle mount collector started (fileLoaded=true)")
+        dev.windplayer.translate.TranslateService.pendingSubtitleMount.collect { request ->
+            if (request == null) return@collect
+            Log.i("MobilePlayerScreen", "Subtitle mount requested: primary=${request.primaryPath}, secondary=${request.secondaryPath}, dual=${request.dualPath}, mode=$subtitleDisplayMode")
             try {
-                player.command("sub-add", path, "select")
+                when (subtitleDisplayMode) {
+                    dev.windplayer.ui.SubtitleDisplayMode.DUAL_STACKED -> {
+                        // Stacked: use the dual SRT (two lines per cue) as
+                        // the single primary track.
+                        val path = request.dualPath ?: request.primaryPath
+                        player.command("sub-add", path, "select")
+                        Log.i("MobilePlayerScreen", "Mounted DUAL_STACKED subtitle: $path")
+                    }
+                    dev.windplayer.ui.SubtitleDisplayMode.DUAL_SEPARATED -> {
+                        // Separated: translated as primary (bottom), original
+                        // as secondary (top) via mpv secondary-sid.
+                        player.command("sub-add", request.primaryPath, "select")
+                        Log.i("MobilePlayerScreen", "Mounted primary (translated) subtitle: ${request.primaryPath}")
+                        if (request.secondaryPath != null) {
+                            // Add source SRT without auto-select, then find its
+                            // track ID and set as secondary-sid.
+                            player.command("sub-add", request.secondaryPath)
+                            // mpv updates track-list asynchronously after sub-add;
+                            // wait briefly so the query sees the new track.
+                            delay(200)
+                            setSecondarySubtitleToLastExternal(player)
+                            Log.i("MobilePlayerScreen", "Mounted secondary (source) subtitle: ${request.secondaryPath}")
+                        }
+                    }
+                    dev.windplayer.ui.SubtitleDisplayMode.TRANSLATED_ONLY -> {
+                        player.command("sub-add", request.primaryPath, "select")
+                        Log.i("MobilePlayerScreen", "Mounted TRANSLATED_ONLY subtitle: ${request.primaryPath}")
+                    }
+                }
                 osdText = dev.windplayer.ui.I18n.get("gen_sub_ready")
-                Log.i("MobilePlayerScreen", "Auto-mounted subtitle: $path")
             } catch (e: Exception) {
-                Log.w("MobilePlayerScreen", "sub-add failed: ${e.message}")
+                Log.w("MobilePlayerScreen", "sub-add failed: ${e.message}", e)
             }
+            // Clear the bus so the same SRT doesn't mount twice on
+            // recomposition (e.g. after a brief fileLoaded=false→true cycle).
             dev.windplayer.translate.TranslateService.pendingSubtitleMount.value = null
         }
     }
@@ -1142,21 +1183,27 @@ private fun TrackSelectionContent(
     val trackType = when (tabIndex) { 0 -> "video"; 1 -> "audio"; else -> "sub" }
 
     var currentId by remember { mutableStateOf("") }
-    var tracks by remember { mutableStateOf<List<Triple<String, String, String>>>(emptyList()) }
+    var secondaryId by remember { mutableStateOf("") }
+    var tracks by remember { mutableStateOf<List<TrackItem>>(emptyList()) }
+    val isSubTab = tabIndex == 2
 
     // Read track list + current selection off the main thread.
     LaunchedEffect(tabIndex) {
         withContext(Dispatchers.IO) {
             currentId = try { player.getPropertyString(prop) ?: "" } catch (_: Exception) { "" }
+            if (isSubTab) {
+                secondaryId = try { player.getPropertyString("secondary-sid") ?: "" } catch (_: Exception) { "" }
+            }
             val count = try { player.getPropertyLong("track-list/count").toInt() } catch (_: Exception) { 0 }
-            val list = mutableListOf<Triple<String, String, String>>()
+            val list = mutableListOf<TrackItem>()
             for (i in 0 until count) {
                 val type = try { player.getPropertyString("track-list/$i/type") ?: "" } catch (_: Exception) { "" }
                 if (type != trackType) continue
                 val tid = try { player.getPropertyString("track-list/$i/id") ?: "" } catch (_: Exception) { "" }
                 val lang = try { player.getPropertyString("track-list/$i/lang") ?: "" } catch (_: Exception) { "" }
                 val title = try { player.getPropertyString("track-list/$i/title") ?: "" } catch (_: Exception) { "" }
-                list.add(Triple(tid, lang, title))
+                val ext = try { player.getPropertyString("track-list/$i/external") } catch (_: Exception) { null }
+                list.add(TrackItem(tid, lang, title, ext == "true" || ext == "yes"))
             }
             tracks = list
         }
@@ -1184,29 +1231,117 @@ private fun TrackSelectionContent(
             Text(I18n.get("none"), color = if (currentId == "no") WindColors.LightSignalOrange else WindColors.MediaMuted, fontSize = 14.sp, modifier = Modifier.padding(16.dp))
         }
 
-        for ((tid, lang, title) in tracks) {
-            val selected = currentId == tid
+        for (item in tracks) {
+            val selected = currentId == item.id
+            val isSec = isSubTab && secondaryId == item.id
             Surface(
                 modifier = Modifier.fillMaxWidth().clickable {
                     onDismiss()
-                    currentId = tid
+                    currentId = item.id
                     scope.launch(Dispatchers.IO) {
-                        try { player.setProperty(prop, tid) } catch (_: Exception) {}
+                        try { player.setProperty(prop, item.id) } catch (_: Exception) {}
                     }
                 },
                 color = if (selected) WindColors.LightSignalOrange.copy(alpha = 0.15f) else Color.Transparent
             ) {
                 Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("#$tid", color = WindColors.MediaMuted, fontSize = 12.sp, modifier = Modifier.width(40.dp))
+                    Text("#${item.id}", color = WindColors.MediaMuted, fontSize = 12.sp, modifier = Modifier.width(40.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(title.ifBlank { lang.ifBlank { String.format(I18n.get("track_n"), tid) } }, color = WindColors.MediaCream, fontSize = 14.sp)
-                        if (lang.isNotEmpty() && title.isNotEmpty()) Text(lang, color = WindColors.MediaMuted, fontSize = 11.sp)
+                        Text(item.title.ifBlank { item.lang.ifBlank { String.format(I18n.get("track_n"), item.id) } }, color = WindColors.MediaCream, fontSize = 14.sp)
+                        if (item.lang.isNotEmpty() && item.title.isNotEmpty()) Text(item.lang, color = WindColors.MediaMuted, fontSize = 11.sp)
                     }
-                    if (selected) PhosphorIcon(Phosphor.CHECK, null, tint = WindColors.LightSignalOrange, size = 18.dp)
+                    if (isSubTab) {
+                        if (selected) { SubtitleBadge(I18n.get("sub_primary_badge"), WindColors.LightSignalOrange); Spacer(Modifier.width(4.dp)) }
+                        if (isSec) SubtitleBadge(I18n.get("sub_secondary_badge"), WindColors.MediaCream)
+                        if (item.isExternal) {
+                            Spacer(Modifier.width(6.dp))
+                            Surface(onClick = {
+                                onDismiss()
+                                scope.launch(Dispatchers.IO) { try { player.command("sub-remove", item.id) } catch (_: Exception) {} }
+                            }, color = Color.Transparent, shape = WindRadius.Pill) {
+                                PhosphorIcon(Phosphor.X, "Del", tint = WindColors.DustTaupe, size = 16.dp)
+                            }
+                        }
+                    } else {
+                        if (selected) PhosphorIcon(Phosphor.CHECK, null, tint = WindColors.LightSignalOrange, size = 18.dp)
+                    }
+                }
+            }
+        }
+
+        // Secondary subtitle picker (subtitle tab only).
+        if (isSubTab && tracks.isNotEmpty()) {
+            HorizontalDivider(Modifier.padding(vertical = 8.dp), color = WindColors.MediaCream.copy(alpha = 0.1f))
+            Text(I18n.get("sub_secondary"), color = WindColors.MediaMuted, fontSize = 13.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+            Surface(
+                modifier = Modifier.fillMaxWidth().clickable {
+                    scope.launch(Dispatchers.IO) { try { player.setProperty("secondary-sid", "no") } catch (_: Exception) {} }
+                    secondaryId = ""
+                },
+                color = if (secondaryId.isEmpty() || secondaryId == "no") WindColors.LightSignalOrange.copy(alpha = 0.15f) else Color.Transparent
+            ) {
+                Text(I18n.get("none"), color = if (secondaryId.isEmpty() || secondaryId == "no") WindColors.LightSignalOrange else WindColors.MediaMuted, fontSize = 14.sp, modifier = Modifier.padding(16.dp))
+            }
+            for (item in tracks) {
+                val ss = secondaryId == item.id
+                Surface(
+                    modifier = Modifier.fillMaxWidth().clickable {
+                        scope.launch(Dispatchers.IO) { try { player.setProperty("secondary-sid", item.id) } catch (_: Exception) {} }
+                        secondaryId = item.id
+                    },
+                    color = if (ss) WindColors.MediaCream.copy(alpha = 0.1f) else Color.Transparent
+                ) {
+                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("#${item.id}", color = WindColors.MediaMuted, fontSize = 12.sp, modifier = Modifier.width(40.dp))
+                        Text(item.title.ifBlank { item.lang.ifBlank { String.format(I18n.get("track_n"), item.id) } }, color = WindColors.MediaCream, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                        if (ss) PhosphorIcon(Phosphor.CHECK, null, tint = WindColors.MediaCream, size = 16.dp)
+                    }
                 }
             }
         }
     }
 }
 
+@Composable
+private fun SubtitleBadge(text: String, tint: Color) {
+    Surface(shape = WindRadius.Chip, color = tint.copy(alpha = 0.15f)) {
+        Text(text, color = tint, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+    }
+}
+
+private data class TrackItem(
+    val id: String,
+    val lang: String,
+    val title: String,
+    val isExternal: Boolean
+)
+
 private fun fmt(d: Double): String = if (d >= 0) "+%ds".format(d.toInt()) else "%ds".format(d.toInt())
+
+/**
+ * Find the last external subtitle track in mpv's track-list and set it as
+ * the secondary subtitle (displayed at the top of the screen).
+ *
+ * Called after `sub-add <source.srt>` to wire up the source-language SRT
+ * as the secondary track for dual-separated display mode.
+ */
+private fun setSecondarySubtitleToLastExternal(player: MpvPlayer) {
+    try {
+        val count = player.getPropertyLong("track-list/count").toInt()
+        for (i in count - 1 downTo 0) {
+            val type = player.getPropertyString("track-list/$i/type")
+            if (type != "sub") continue
+            val external = player.getPropertyString("track-list/$i/external")
+            if (external != "true" && external != "yes") continue
+            val id = player.getPropertyString("track-list/$i/id")?.toIntOrNull()
+            if (id != null) {
+                player.setProperty("secondary-sid", id.toString())
+                android.util.Log.i("MobilePlayerScreen", "Set secondary-sid = $id (track-list index $i)")
+                return
+            }
+        }
+        android.util.Log.w("MobilePlayerScreen", "setSecondarySubtitleToLastExternal: no external sub track found")
+    } catch (e: Exception) {
+        android.util.Log.w("MobilePlayerScreen", "setSecondarySubtitleToLastExternal failed: ${e.message}")
+    }
+}
