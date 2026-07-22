@@ -16,6 +16,16 @@ See `upstream.txt`:
 - Release: `2026-04-25`
 - NDK: `r29`
 
+## GitHub Actions build
+
+Run the manual `Build mpv Android bridge` workflow. It checks out the fixed
+mpv-android revision, verifies and extracts the official arm64 release APK,
+applies the patch, and rebuilds only `libplayer.so` with NDK r29. It builds a
+fixed mpv prefix solely to obtain ABI-correct headers, then links the bridge
+against the verified official APK libraries. The uploaded artifact includes the
+bridge, SHA-256, provenance, and build logs; the workflow does not modify the
+checked-in WindPlayer binaries.
+
 ## Linux build
 
 mpv-android's native build scripts do not support Windows or WSL. Use a Linux

@@ -1,0 +1,161 @@
+name: Build mpv Android bridge
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build arm64 libplayer.so
+    runs-on: ubuntu-24.04
+    # A cold fixed-prefix build compiles FFmpeg before it can be cached.
+    timeout-minutes: 90
+    env:
+      MPV_ANDROID_COMMIT: 3018d47277d5b3ca02acdd96466f261c1d23ee08
+      MPV_ANDROID_RELEASE: 2026-04-25
+      MPV_COMMIT: 9ce79bcaa0132660a2e45b6bfc1fb0c199665277
+      FFMPEG_COMMIT: fc4960b155aa33b9a08cf26c5e0a0530f0545f24
+      NDK_VERSION: 29.0.14206865
+      APK_NAME: app-default-arm64-v8a-release.apk
+      APK_SHA256: 4400bcba6be9cec1128e24d1eba153d8727384926b0639fa7fe44d4e36b04f81
+      SOURCE_DIR: mpv-android
+      OUTPUT_DIR: mpv-bridge-artifact
+
+    steps:
+      - name: Checkout WindPlayer
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          accept-android-sdk-licenses: true
+
+      - name: Install NDK
+        run: sdkmanager "ndk;${NDK_VERSION}"
+
+      - name: Install native build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes autoconf pkgconf libtool ninja-build python3-pip gperf
+          python3 -m pip install --user 'meson==1.7.0'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Checkout fixed mpv-android source
+        run: |
+          set -euxo pipefail
+          git init "$SOURCE_DIR"
+          git -C "$SOURCE_DIR" remote add origin https://github.com/mpv-android/mpv-android.git
+          git -C "$SOURCE_DIR" fetch --depth=1 origin "$MPV_ANDROID_COMMIT"
+          git -C "$SOURCE_DIR" checkout --detach FETCH_HEAD
+          test "$(git -C "$SOURCE_DIR" rev-parse HEAD)" = "$MPV_ANDROID_COMMIT"
+
+      - name: Apply EndFile bridge patch
+        run: |
+          set -euxo pipefail
+          git -C "$SOURCE_DIR" apply --check --unidiff-zero "$GITHUB_WORKSPACE/tools/mpv-android-bridge/0001-pass-end-file-data.patch"
+          git -C "$SOURCE_DIR" apply --unidiff-zero "$GITHUB_WORKSPACE/tools/mpv-android-bridge/0001-pass-end-file-data.patch"
+
+      - name: Download verified official native libraries
+        run: |
+          set -euxo pipefail
+          curl --fail --location --retry 3 \
+            "https://github.com/mpv-android/mpv-android/releases/download/${MPV_ANDROID_RELEASE}/${APK_NAME}" \
+            --output "$APK_NAME"
+          echo "${APK_SHA256}  ${APK_NAME}" | sha256sum --check --strict
+          mkdir -p official-libs/arm64
+          unzip -j "$APK_NAME" 'lib/arm64-v8a/*.so' -d official-libs/arm64
+
+      - name: Cache fixed arm64 mpv prefix
+        id: prefix-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: mpv-android/buildscripts/prefix/arm64
+          key: mpv-android-prefix-arm64-ndk-${{ env.NDK_VERSION }}-mpv-${{ env.MPV_COMMIT }}-ffmpeg-${{ env.FFMPEG_COMMIT }}
+
+      - name: Build fixed libmpv headers and prefix
+        run: |
+          set -euxo pipefail
+          mkdir -p "$SOURCE_DIR/buildscripts/sdk"
+          ln -s "$ANDROID_HOME" "$SOURCE_DIR/buildscripts/sdk/android-sdk-linux"
+          ln -s "$ANDROID_HOME/ndk/$NDK_VERSION" "$SOURCE_DIR/buildscripts/sdk/android-ndk-r29"
+          if [[ "${{ steps.prefix-cache.outputs.cache-hit }}" == 'true' ]]; then
+            echo "Reused cached fixed arm64 mpv prefix." | tee build-mpv-prefix.log
+            exit 0
+          fi
+          (
+            cd "$SOURCE_DIR/buildscripts"
+            IN_CI=1 ./include/download-deps.sh
+            rm -rf deps/mpv
+            git clone https://github.com/mpv-player/mpv.git deps/mpv
+            git -C deps/mpv checkout --detach "$MPV_COMMIT"
+            git -C deps/ffmpeg fetch --depth=1 origin "$FFMPEG_COMMIT"
+            git -C deps/ffmpeg checkout --detach FETCH_HEAD
+            test "$(git -C deps/mpv rev-parse HEAD)" = "$MPV_COMMIT"
+            test "$(git -C deps/ffmpeg rev-parse HEAD)" = "$FFMPEG_COMMIT"
+            ./buildall.sh --arch arm64 --only-deps mpv
+            ./buildall.sh --arch arm64 --no-deps mpv
+          ) 2>&1 | tee build-mpv-prefix.log
+
+      - name: Restore official shared libraries for bridge linking
+        run: |
+          set -euxo pipefail
+          PREFIX64="$GITHUB_WORKSPACE/$SOURCE_DIR/buildscripts/prefix/arm64"
+          test -d "$PREFIX64/include"
+          mkdir -p "$PREFIX64/lib"
+          cp official-libs/arm64/*.so "$PREFIX64/lib/"
+
+      - name: Build patched libplayer.so
+        run: |
+          set -euxo pipefail
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
+          export ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
+          export PATH="$ANDROID_NDK_HOME:$PATH"
+          ndk-build \
+            -C "$SOURCE_DIR/app/src/main" \
+            -j"$(nproc)" \
+            NDK_PROJECT_PATH=. \
+            APP_BUILD_SCRIPT=jni/Android.mk \
+            NDK_APPLICATION_MK=jni/Application.mk \
+            PREFIX64="$GITHUB_WORKSPACE/$SOURCE_DIR/buildscripts/prefix/arm64" \
+            V=1 2>&1 | tee build-mpv-bridge.log
+          test -s "$SOURCE_DIR/app/src/main/libs/arm64-v8a/libplayer.so"
+          file "$SOURCE_DIR/app/src/main/libs/arm64-v8a/libplayer.so" | grep --fixed-strings 'ARM aarch64'
+          readelf --dynamic "$SOURCE_DIR/app/src/main/libs/arm64-v8a/libplayer.so" | grep --fixed-strings 'Shared library: [libmpv.so]'
+
+      - name: Package artifact and provenance
+        run: |
+          set -euxo pipefail
+          mkdir -p "$OUTPUT_DIR"
+          cp "$SOURCE_DIR/app/src/main/libs/arm64-v8a/libplayer.so" "$OUTPUT_DIR/"
+          cp tools/mpv-android-bridge/upstream.txt "$OUTPUT_DIR/"
+          cp build-mpv-bridge.log "$OUTPUT_DIR/"
+          cp build-mpv-prefix.log "$OUTPUT_DIR/"
+          sha256sum "$OUTPUT_DIR/libplayer.so" > "$OUTPUT_DIR/SHA256SUMS.txt"
+          {
+            echo "windplayer_ref=${GITHUB_REF}"
+            echo "windplayer_commit=${GITHUB_SHA}"
+            echo "mpv_android_commit=${MPV_ANDROID_COMMIT}"
+            echo "mpv_android_release=${MPV_ANDROID_RELEASE}"
+            echo "mpv_commit=${MPV_COMMIT}"
+            echo "ffmpeg_commit=${FFMPEG_COMMIT}"
+            echo "ndk=${NDK_VERSION}"
+            echo "base_apk=${APK_NAME}"
+            echo "base_apk_sha256=${APK_SHA256}"
+            echo "patch_sha256=$(sha256sum tools/mpv-android-bridge/0001-pass-end-file-data.patch | cut -d' ' -f1)"
+          } > "$OUTPUT_DIR/provenance.txt"
+
+      - name: Upload patched bridge
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mpv-android-end-file-bridge-arm64-${{ github.sha }}
+          path: mpv-bridge-artifact/
+          if-no-files-found: error
+          retention-days: 14
