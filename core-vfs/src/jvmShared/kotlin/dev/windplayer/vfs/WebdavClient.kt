@@ -3,7 +3,6 @@ package dev.windplayer.vfs
 import java.util.logging.Logger
 
 import io.ktor.client.*
-import io.ktor.client.call.body
 import io.ktor.client.engine.cio.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
@@ -13,10 +12,16 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.w3c.dom.Node
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileOutputStream
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import javax.xml.parsers.DocumentBuilderFactory
 
 private val LOG = Logger.getLogger("dev.windplayer.vfs.WebdavClient")
+private const val MAX_PROPFIND_BYTES = 8 * 1024 * 1024
 
 class WebdavClient : VfsClient {
 
@@ -31,7 +36,10 @@ class WebdavClient : VfsClient {
             disconnect()
             this@WebdavClient.config = config
             val scheme = config.httpScheme()
-            baseUrl = "$scheme://${config.bareHost}:${config.defaultPort()}"
+            val port = config.defaultPort()
+            val defaultPort = if (scheme == "https") 443 else 80
+            val portPart = if (port == defaultPort) "" else ":$port"
+            baseUrl = "$scheme://${hostForUrl(config.bareHost)}$portPart"
             httpClient = HttpClient(CIO) {
                 expectSuccess = false
                 // H18: don't follow redirects. A malicious / compromised WebDAV
@@ -54,8 +62,8 @@ class WebdavClient : VfsClient {
                     "<d:propfind xmlns:d=\"DAV:\"><d:prop><d:displayname/></d:prop></d:propfind>")
             }
             LOG.info("connect probe: ${probeResponse.status}")
-            if (probeResponse.status.value == 401) {
-                LOG.warning("WebDAV authentication failed (401)")
+            if (probeResponse.status != HttpStatusCode.MultiStatus) {
+                LOG.warning("WebDAV connect probe failed (${probeResponse.status})")
                 disconnect()
                 return@withContext false
             }
@@ -63,6 +71,7 @@ class WebdavClient : VfsClient {
             true
         } catch (e: Exception) {
             LOG.warning("connect failed: ${e.message}")
+            disconnect()
             false
         }
     }
@@ -95,8 +104,10 @@ class WebdavClient : VfsClient {
                     "</d:propfind>")
             }
 
-            val body = response.bodyAsText()
-            parsePropfindResponse(body, path)
+            if (response.status != HttpStatusCode.MultiStatus) {
+                throw IllegalStateException("Unexpected PROPFIND status ${response.status}")
+            }
+            parsePropfindResponse(readLimitedBody(response, MAX_PROPFIND_BYTES), path)
         } catch (e: Exception) {
             LOG.warning("listDirectory failed: ${e.message}")
             emptyList()
@@ -129,14 +140,26 @@ class WebdavClient : VfsClient {
         val response = client.get(url) {
             header("Authorization", buildBasicAuth(cfg.username, cfg.password))
         }
+        if (response.status.value !in 200..299) {
+            throw IllegalStateException("Unexpected GET status ${response.status}")
+        }
         val channel = response.bodyAsChannel()
-        File(localPath).outputStream().use { out ->
-            val buf = ByteArray(64 * 1024)
-            while (!channel.isClosedForRead) {
-                val n = channel.readAvailable(buf)
-                if (n <= 0) break
-                out.write(buf, 0, n)
+        val destination = File(localPath)
+        destination.parentFile?.mkdirs()
+        val temporary = File.createTempFile(".${destination.name}.", ".tmp", destination.absoluteFile.parentFile)
+        try {
+            FileOutputStream(temporary).use { out ->
+                val buf = ByteArray(64 * 1024)
+                while (!channel.isClosedForRead) {
+                    val n = channel.readAvailable(buf)
+                    if (n <= 0) break
+                    out.write(buf, 0, n)
+                }
+                out.fd.sync()
             }
+            atomicReplace(temporary, destination)
+        } finally {
+            temporary.delete()
         }
         LOG.info("downloaded $remotePath -> $localPath")
     }
@@ -163,6 +186,33 @@ class WebdavClient : VfsClient {
         if (username.isBlank()) return ""
         val credentials = "$username:$password"
         return "Basic ${java.util.Base64.getEncoder().encodeToString(credentials.toByteArray())}"
+    }
+
+    private suspend fun readLimitedBody(response: HttpResponse, limit: Int): String {
+        val contentLength = response.contentLength()
+        if (contentLength != null && contentLength > limit) {
+            throw IllegalStateException("PROPFIND response exceeds $limit bytes")
+        }
+        val channel = response.bodyAsChannel()
+        val output = ByteArrayOutputStream(minOf(contentLength?.toInt() ?: 8192, limit))
+        val buffer = ByteArray(16 * 1024)
+        var total = 0
+        while (!channel.isClosedForRead) {
+            val read = channel.readAvailable(buffer)
+            if (read <= 0) break
+            total += read
+            if (total > limit) throw IllegalStateException("PROPFIND response exceeds $limit bytes")
+            output.write(buffer, 0, read)
+        }
+        return output.toString(Charsets.UTF_8.name())
+    }
+
+    private fun atomicReplace(source: File, destination: File) {
+        try {
+            Files.move(source.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        } catch (_: AtomicMoveNotSupportedException) {
+            Files.move(source.toPath(), destination.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        }
     }
 
     private fun parsePropfindResponse(xml: String, requestPath: String): List<FileNode> {

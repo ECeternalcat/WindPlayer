@@ -87,7 +87,7 @@ class MpvRenderView(
                             Log.i(TAG, "surface invalidated before attach, aborting")
                             return@withContext
                         }
-                        player.attachSurface(holder.surface)
+                        check(player.attachSurface(holder.surface)) { "Unable to attach mpv Surface" }
                         player.initialize()
                         if (firstInit && !firstInitDone.getAndSet(true)) {
                             Log.i(TAG, "mpv ready, handing off to screen for loadfile")

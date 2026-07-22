@@ -93,32 +93,32 @@ internal fun bindDesktopShortcuts(rootPane: JRootPane, ctx: DesktopShortcutConte
     bind(KeyStroke.getKeyStroke(KeyEvent.VK_LEFT, 0), "seekBack5") {
         if (isPlayer()) {
             player.command("seek", "-5")
-            val pos = player.getPropertyDouble("time-pos")
-            val dur = player.getPropertyDouble("duration")
+            val pos = player.getPropertyDouble("time-pos") ?: 0.0
+            val dur = player.getPropertyDouble("duration") ?: 0.0
             if (dur > 0 && pos >= 0) osd.tryEmit("<< -5s  ${formatDurationOsd(pos, dur)}")
         }
     }
     bind(KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, 0), "seekFwd5") {
         if (isPlayer()) {
             player.command("seek", "5")
-            val pos = player.getPropertyDouble("time-pos")
-            val dur = player.getPropertyDouble("duration")
+            val pos = player.getPropertyDouble("time-pos") ?: 0.0
+            val dur = player.getPropertyDouble("duration") ?: 0.0
             if (dur > 0 && pos >= 0) osd.tryEmit(">> +5s  ${formatDurationOsd(pos, dur)}")
         }
     }
     bind(KeyStroke.getKeyStroke(KeyEvent.VK_LEFT, InputEvent.SHIFT_DOWN_MASK), "seekBack30") {
         if (isPlayer()) {
             player.command("seek", "-30")
-            val pos = player.getPropertyDouble("time-pos")
-            val dur = player.getPropertyDouble("duration")
+            val pos = player.getPropertyDouble("time-pos") ?: 0.0
+            val dur = player.getPropertyDouble("duration") ?: 0.0
             if (dur > 0 && pos >= 0) osd.tryEmit("<< -30s  ${formatDurationOsd(pos, dur)}")
         }
     }
     bind(KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, InputEvent.SHIFT_DOWN_MASK), "seekFwd30") {
         if (isPlayer()) {
             player.command("seek", "30")
-            val pos = player.getPropertyDouble("time-pos")
-            val dur = player.getPropertyDouble("duration")
+            val pos = player.getPropertyDouble("time-pos") ?: 0.0
+            val dur = player.getPropertyDouble("duration") ?: 0.0
             if (dur > 0 && pos >= 0) osd.tryEmit(">> +30s  ${formatDurationOsd(pos, dur)}")
         }
     }
@@ -146,7 +146,7 @@ internal fun bindDesktopShortcuts(rootPane: JRootPane, ctx: DesktopShortcutConte
         if (isPlayer()) {
             player.command("cycle", "mute")
             val muted = player.getPropertyString("mute") == "yes"
-            osd.tryEmit(if (muted) I18n.get("osd_muted") else "${I18n.get("osd_vol")}: ${player.getPropertyLong("volume")}%")
+            osd.tryEmit(if (muted) I18n.get("osd_muted") else "${I18n.get("osd_vol")}: ${player.getPropertyLong("volume") ?: 100L}%")
         }
     }
 
@@ -242,14 +242,14 @@ internal fun bindDesktopShortcuts(rootPane: JRootPane, ctx: DesktopShortcutConte
     // ---------- A-B Loop ----------
     bind(KeyStroke.getKeyStroke(KeyEvent.VK_A, 0), "abLoopA") {
         if (isPlayer()) {
-            val pos = player.getPropertyDouble("time-pos")
+            val pos = player.getPropertyDouble("time-pos") ?: 0.0
             player.setProperty("ab-loop-a", "%.3f".format(pos))
             osd.tryEmit("${I18n.get("osd_ab_a")}: ${formatDuration(pos)}")
         }
     }
     bind(KeyStroke.getKeyStroke(KeyEvent.VK_B, InputEvent.SHIFT_DOWN_MASK), "abLoopB") {
         if (isPlayer()) {
-            val pos = player.getPropertyDouble("time-pos")
+            val pos = player.getPropertyDouble("time-pos") ?: 0.0
             player.setProperty("ab-loop-b", "%.3f".format(pos))
             osd.tryEmit("${I18n.get("osd_ab_b")}: ${formatDuration(pos)}")
         }
@@ -285,14 +285,14 @@ internal fun bindDesktopShortcuts(rootPane: JRootPane, ctx: DesktopShortcutConte
 // ------------------------------------------------------------------
 
 internal fun adjustVolume(player: MpvPlayer, osd: MutableSharedFlow<String>, delta: Int) {
-    val vol = player.getPropertyLong("volume")
+    val vol = player.getPropertyLong("volume") ?: 100L
     val newVol = (vol + delta).coerceIn(0, 100)
     player.setProperty("volume", newVol.toString())
     osd.tryEmit("${I18n.get("osd_vol")}: $newVol%")
 }
 
 internal fun adjustSpeed(player: MpvPlayer, osd: MutableSharedFlow<String>, delta: Double) {
-    val speed = player.getPropertyDouble("speed")
+    val speed = player.getPropertyDouble("speed") ?: 1.0
     val newSpeed = (speed + delta).coerceIn(0.25, 4.0)
     player.setProperty("speed", "%.2f".format(newSpeed))
     osd.tryEmit("${I18n.get("speed")}: %.2fx".format(newSpeed))
@@ -302,7 +302,7 @@ internal fun adjustDelay(player: MpvPlayer, osd: MutableSharedFlow<String>, prop
     // L9: read the current value BEFORE issuing `add`, then compute the new
     // value locally. mpv processes `add` asynchronously; immediately re-reading
     // the property often returns the pre-add value, making the OSD one step off.
-    val current = player.getPropertyDouble(property)
+    val current = player.getPropertyDouble(property) ?: 0.0
     player.command("add", property, delta.toString())
     val newValue = current + delta
     val label = if (property == "sub-delay") I18n.get("osd_sub_delay") else I18n.get("osd_audio_delay")
@@ -310,7 +310,7 @@ internal fun adjustDelay(player: MpvPlayer, osd: MutableSharedFlow<String>, prop
 }
 
 internal fun adjustEq(player: MpvPlayer, osd: MutableSharedFlow<String>, property: String, delta: Int) {
-    val current = player.getPropertyLong(property)
+    val current = player.getPropertyLong(property) ?: 0L
     player.command("add", property, delta.toString())
     val newValue = current + delta
     val label = property.replaceFirstChar { it.uppercase() }

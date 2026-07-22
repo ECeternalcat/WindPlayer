@@ -1,102 +1,128 @@
 name: Release
 
-# Builds distributable artifacts whenever a `v*` tag is pushed and attaches
-# them to a GitHub Release.
-#
-# Artifacts produced:
-#   - Android debug APK (unsigned — for sideloading only)
-#   - Desktop distribution ZIP (Compose Desktop's distZip — a portable JVM
-#     bundle of libs + launch scripts; runs on any OS with JDK 21). Not to be
-#     confused with jpackage-produced installers (MSI/Deb) which require
-#     platform-specific tooling and are not built here.
-#
-# What's NOT produced here:
-#   - Signed Android release APK: requires a keystore (set up later)
-#   - Desktop .msi / .deb: requires platform-specific tooling (Windows runner
-#     for MSI, dpkg-deb for Deb — can be added as separate jobs)
-#
-# To cut a release locally:
-#   git tag v0.2.0
-#   git push origin v0.2.0
-
 on:
   push:
     tags: ['v*']
 
 permissions:
-  contents: write  # required by softprops/action-gh-release to create the release
+  contents: write
 
 jobs:
-  release:
-    name: Build & Publish Release
+  verify:
+    name: Verify source
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-
+    timeout-minutes: 30
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Ensure gradlew is executable
-        run: chmod +x gradlew
-
-      - name: Setup JDK 21
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: chmod +x gradlew
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
         with:
           distribution: temurin
           java-version: '21'
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
         with:
           accept-android-sdk-licenses: true
-
       - name: Install Android SDK components
         run: |
-          set -x
           yes | sdkmanager --licenses > /dev/null 2>&1
-          sdkmanager "platform-tools" "platforms;android-36"
-          sdkmanager "build-tools;36.0.0" || sdkmanager "build-tools;36.0.1"
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;37.0.0"
+      - run: echo "sdk.dir=$ANDROID_HOME" > local.properties
+      - uses: gradle/actions/setup-gradle@d9c87d481d55275bb5441eef3fe0e46805f9ef70 # v3.5.0
+      - name: Compile and test
+        run: ./gradlew :app-desktop:compileKotlinDesktop :app-android:compileDebugKotlin :core-vfs:allTests --no-daemon --stacktrace
 
-      - name: Create local.properties
-        run: echo "sdk.dir=$ANDROID_HOME" > local.properties
-
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
-
-      - name: Extract version from tag
-        id: version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
-      - name: Build Android Debug APK
-        # Pass version info from the git tag so Android versionCode/versionName
-        # actually change between releases (triggers in-place upgrade).
-        run: |
-          VERSION_CODE=$(echo "${{ steps.version.version }}" | tr -cd '[:digit:].' | tr -d '.' | head -c 9)
-          ./gradlew :app-android:assembleDebug --no-daemon --stacktrace \
-            -PversionCode=${VERSION_CODE} -PversionName=${{ steps.version.version }}
-
-      # Build the desktop distribution using distZip (self-contained JVM bundle
-      # with start scripts). AGENTS.md tells contributors to use the same command.
-      - name: Build Desktop distribution
-        run: ./gradlew :app-desktop:distZip --no-daemon --stacktrace -PpackageVersion=${{ steps.version.version }}
-
-      - name: Stage release artifacts
-        run: |
-          set -e
-          mkdir -p artifacts
-          # Android APK
-          cp app-android/build/outputs/apk/debug/*.apk \
-             "artifacts/WindPlayer-${{ steps.version.version }}-android.apk"
-          # Desktop distZip (single self-contained ZIP)
-          cp app-desktop/build/distributions/*.zip \
-             "artifacts/WindPlayer-${{ steps.version.version }}-desktop.zip"
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+  android:
+    name: Build signed Android release
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      WINDPLAYER_KEYSTORE_FILE: ${{ github.workspace }}/release.keystore
+      WINDPLAYER_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      WINDPLAYER_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      WINDPLAYER_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: chmod +x gradlew
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
         with:
-          name: WindPlayer ${{ steps.version.version }}
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          accept-android-sdk-licenses: true
+      - name: Install Android SDK components
+        run: sdkmanager "platform-tools" "platforms;android-36" "build-tools;37.0.0"
+      - run: echo "sdk.dir=$ANDROID_HOME" > local.properties
+      - uses: gradle/actions/setup-gradle@d9c87d481d55275bb5441eef3fe0e46805f9ef70 # v3.5.0
+      - name: Validate tag and signing secrets
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Tag must be vMAJOR.MINOR.PATCH"; exit 1; }
+          [[ -n "$KEYSTORE_BASE64" && -n "$WINDPLAYER_KEYSTORE_PASSWORD" && -n "$WINDPLAYER_KEY_ALIAS" && -n "$WINDPLAYER_KEY_PASSWORD" ]] || { echo "Android release signing secrets are incomplete"; exit 1; }
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$WINDPLAYER_KEYSTORE_FILE"
+          IFS=. read -r MAJOR MINOR PATCH <<< "$VERSION"
+          (( MAJOR <= 210 && MINOR <= 999 && PATCH <= 999 )) || { echo "Version components exceed versionCode limits"; exit 1; }
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=$((MAJOR * 1000000 + MINOR * 1000 + PATCH))" >> "$GITHUB_ENV"
+      - name: Build signed release APK
+        run: ./gradlew :app-android:assembleRelease --no-daemon --stacktrace -PversionCode=$VERSION_CODE -PversionName=$VERSION
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: android-release
+          path: app-android/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+
+  desktop-windows:
+    name: Build Windows desktop release
+    needs: verify
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@d9c87d481d55275bb5441eef3fe0e46805f9ef70 # v3.5.0
+      - name: Build Windows distribution
+        shell: pwsh
+        run: .\gradlew.bat :app-desktop:createDistributable --no-configuration-cache --no-daemon --stacktrace
+      - name: Add libmpv and archive distribution
+        shell: pwsh
+        run: |
+          $app = Get-ChildItem "app-desktop/build/compose/binaries/main/app" -Directory | Select-Object -First 1
+          if (-not $app) { throw "Compose distribution directory not found" }
+          $mpvDir = Join-Path $app.FullName "lib/mpv-dev"
+          New-Item -ItemType Directory -Force -Path $mpvDir | Out-Null
+          Copy-Item "lib/mpv-dev/libmpv-2.dll" $mpvDir
+          Compress-Archive -Path (Join-Path $app.FullName "*") -DestinationPath "WindPlayer-${{ github.ref_name }}-windows-x64.zip"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-windows-release
+          path: WindPlayer-*-windows-x64.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: [android, desktop-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Generate SHA-256 checksums
+        run: cd artifacts && sha256sum *.apk *.zip > SHA256SUMS.txt
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          name: WindPlayer ${{ github.ref_name }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            artifacts/WindPlayer-${{ steps.version.version }}-android.apk
-            artifacts/WindPlayer-${{ steps.version.version }}-desktop.zip
+            artifacts/*.apk
+            artifacts/*.zip
+            artifacts/SHA256SUMS.txt

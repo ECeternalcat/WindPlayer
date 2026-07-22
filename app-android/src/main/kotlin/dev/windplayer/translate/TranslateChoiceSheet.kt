@@ -421,8 +421,10 @@ private fun startTranslation(
         context = context,
         videoTitle = params.videoTitle,
         sourceUrl = params.sourceUrl,
+        sourceIdentity = params.sourceIdentity,
         duration = params.duration,
         doTranslate = doTranslate,
-        trackIndex = trackIndex
+        trackIndex = trackIndex,
+        playbackGeneration = params.playbackGeneration
     )
 }

@@ -1,0 +1,28 @@
+# WindPlayer native asset integrity baseline (2026-07-21)
+# The Android mpv assets below were verified byte-for-byte against the official
+# mpv-android 2026-04-25 arm64-v8a release APK:
+# https://github.com/mpv-android/mpv-android/releases/tag/2026-04-25
+# APK sha256: 4400bcba6be9cec1128e24d1eba153d8727384926b0639fa7fe44d4e36b04f81
+# mpv-android: 3018d47277d5b3ca02acdd96466f261c1d23ee08
+# libmpv:      9ce79bcaa0132660a2e45b6bfc1fb0c199665277
+# FFmpeg:      fc4960b155aa33b9a08cf26c5e0a0530f0545f24
+# NDK:         r29
+# Desktop libmpv and whisper-android.aar still need equivalent provenance.
+
+# Desktop Windows
+02fa97cbdb32a651addbb0eafcdc8446e3b4cb7a09da83518dac4fbf8d62fd81  lib/mpv-dev/libmpv-2.dll
+
+# Android local AAR
+c63f7338533223aff6d511061b649c7639d03004eea03367f8dcdb43e0427ab5  app-android/libs/whisper-android.aar
+
+# Android arm64-v8a native runtime
+79e6d002104eff3235674f9f553822cd03b34ca2ac0afe77c5b6f624bcda43c4  app-android/src/main/jniLibs/arm64-v8a/libavcodec.so
+a5e76247d49e64848bcd5c70582c2d6fa5a3d8e86dfdc5de76c24899720df230  app-android/src/main/jniLibs/arm64-v8a/libavdevice.so
+57270bd5623b60d2d3301e01d9f2716c6b7e7731184461afd154fef0158585ab  app-android/src/main/jniLibs/arm64-v8a/libavfilter.so
+08c63fa386620f1a32ea28bc8fda7aa1627389cf23c7c90e34526a5f7f7a9ca1  app-android/src/main/jniLibs/arm64-v8a/libavformat.so
+1c686aa8f4efd9ee89e1e70aefc87815c2afc6b1244df612659b47da7d34140a  app-android/src/main/jniLibs/arm64-v8a/libavutil.so
+0c52cfab2df0d957d8b346a2bdc5ae8d71feca2591924d77e1cd724d5bf74352  app-android/src/main/jniLibs/arm64-v8a/libc++_shared.so
+bd6f8d1b0f89dca96332d7cfbcc9a53c70ff71da54d5f3b6fa76b35a152f0cda  app-android/src/main/jniLibs/arm64-v8a/libmpv.so
+c083806dd24927bc85fa7174568a49ed7d5556451f639ffbbd934a76b9cff70c  app-android/src/main/jniLibs/arm64-v8a/libplayer.so
+ba462e741e529ffdf38adc2ad5ae1b10f1b906e61f48a8c7adc8296529647be2  app-android/src/main/jniLibs/arm64-v8a/libswresample.so
+bad22e11c5eec938579c11fc38eade0d2058112a76d34f2ff39c0ae8e960b4f2  app-android/src/main/jniLibs/arm64-v8a/libswscale.so

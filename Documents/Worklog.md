@@ -2792,3 +2792,106 @@ Modified:
 ## Phase 70 Status Summary
 **Completed**: Tuned Whisper transcription timestamps, built subtitle cache management tools, implemented dual-subtitle outputs (translated, stacked, separated), integrated display selectors, and added support for secondary subtitle tracks.
 
+---
+
+## Phase 71: Fifth Security and Lifecycle Audit (Completed)
+
+The fifth full audit is recorded in `Documents/Audit-2026-07-21.md`. It covered
+the native player boundary, VFS protocols, Android playback state, AI subtitle
+pipeline, release artifacts, CI supply chain and dependency verification.
+
+### Player Lifecycle
+
+- Added process-wide ownership and locking around Android's singleton JNI player.
+- Removed page-level asynchronous native destruction; Activity teardown remains the owner of final disposal.
+- Serialized Android load requests with a generation counter and Mutex so stale requests cannot replace newer playback.
+- Restarted the Desktop player event collector for every playback path to avoid stale playlist and resume parameters.
+- Added `mpv_wakeup`, JNA property structures and correct `char **` handling on Desktop.
+- Replaced lossy SharedFlow event buffers with reliable Channel-backed Flow delivery.
+- Surface attachment failure now aborts initialization instead of continuing into audio-only playback.
+- Numeric mpv getters now return nullable values, so native property failures no longer look like valid zeroes.
+
+### Network and Storage Security
+
+- Enabled FTPS endpoint identification.
+- Added WebDAV status validation, bounded PROPFIND responses and atomic downloads.
+- Hardened Range parsing, zero-byte streaming, failed SSH open cleanup, IPv6/path URL encoding and cache isolation.
+- Corrected TrackMatcher season/episode parsing and removed unsafe compact-prefix matching.
+- Serialized VFS connection replacement and HistoryStore writes.
+- Added atomic Desktop server configuration writes and remote basename validation.
+- Moved the AI API key to encrypted preferences with plaintext migration.
+- Bound generated subtitle mount events to task/source/playback identity.
+
+### Release and Supply Chain
+
+- Release now builds a signed Android release APK and a Windows x64 Desktop distribution.
+- Missing Android signing secrets fail closed; debug APKs are no longer published as releases.
+- Added test gates, strict SemVer-derived versionCode, SHA-256 release checksums and SHA-pinned Actions.
+- Added Gradle wrapper SHA-256, dependency verification metadata and a native asset integrity manifest.
+- Verified all packaged Android arm64 mpv libraries byte-for-byte against the official mpv-android `2026-04-25` release APK and recorded its digest, upstream commits and NDK version.
+- Added `tools/mpv-android-bridge/`: a fixed-commit patch and Linux/macOS build instructions for rebuilding only `libplayer.so` with exact EndFile reason/error forwarding. The repository still uses the old prebuilt bridge until that native build is performed.
+
+### Verification
+
+```text
+BUILD SUCCESSFUL
+:app-desktop:compileKotlinDesktop
+:app-android:compileDebugKotlin
+:app-android:testDebugUnitTest       3 tests
+:app-android:assembleDebug
+:core-vfs:allTests                  95 tests
+```
+
+The final run used strict dependency verification and disabled configuration
+cache to avoid known AGP/Compose task serialization issues. Local Desktop
+`createDistributable` remains unverified because the installed Android Studio
+JBR has no `jpackage.exe`; the Windows Release job uses Temurin 21.
+
+## Phase 71 Status Summary
+
+**Completed**: Fixed all repository-local Critical findings and the actionable
+High/Medium VFS, lifecycle, release and credential issues. Remaining external
+conditions are tracked in the audit: real Android EndFile reasons require JNI
+bridge source, chunked Whisper requires a native streaming API, and release
+signing/provenance/attestation require repository secrets and upstream binary
+build information.
+
+---
+
+## Phase 72: EndFile Bridge and Chunked Whisper (In Progress)
+
+### EndFile bridge
+
+- Added `tools/mpv-android-bridge/` pinned to mpv-android commit
+  `3018d47277d5b3ca02acdd96466f261c1d23ee08`.
+- The native patch forwards `mpv_event_end_file.reason`, `error` and
+  `playlist_entry_id` through a dedicated `MPVLib.endFile()` callback.
+- Kotlin and Desktop JNA now carry the complete event data.
+- The patch passes `git apply --check --unidiff-zero` against the fixed upstream
+  commit. Rebuilding `libplayer.so` on Linux/macOS remains required before the
+  Android runtime receives the new callback.
+
+### Chunked Whisper
+
+- Audio extraction now writes a file-backed 16 kHz mono float PCM stream.
+- Whisper reads 120-second windows with 10-second overlap, applies global time
+  offsets, removes overlap duplicates and renumbers final segments.
+- Temporary PCM files are closed and deleted with `ExtractedAudio.use {}`.
+- Six Android unit tests cover window planning and merge behavior.
+
+### Verification
+
+```text
+BUILD SUCCESSFUL
+:app-desktop:compileKotlinDesktop
+:app-android:compileDebugKotlin
+:app-android:testDebugUnitTest       6 tests
+:core-vfs:allTests                  95 tests
+```
+
+## Phase 72 Status Summary
+
+**In Progress**: Chunked Whisper is implemented and verified. The EndFile
+protocol and patch are implemented and validated, but the Android runtime still
+uses the old prebuilt `libplayer.so`; native rebuild and device validation are
+the remaining steps.

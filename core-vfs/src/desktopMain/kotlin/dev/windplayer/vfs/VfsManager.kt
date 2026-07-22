@@ -12,11 +12,16 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.util.Properties
 import java.util.UUID
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 private val LOG = Logger.getLogger("dev.windplayer.vfs.VfsManager")
 
@@ -37,6 +42,7 @@ class VfsManager {
     // the file write itself is not atomic and would corrupt servers.properties
     // under overlapping saves.
     private val configLock = Any()
+    private val connectLocks = ConcurrentHashMap<String, Mutex>()
 
     private val configDir = File(System.getProperty("user.home"), ".windplayer")
     private val configFile = File(configDir, "servers.properties")
@@ -70,15 +76,18 @@ class VfsManager {
     fun getServer(id: String): ServerConfig? = _servers.find { it.id == id }
 
     suspend fun connectServer(serverId: String): Result<Unit> {
-        val config = getServer(serverId) ?: return Result.failure(IllegalArgumentException("Server not found"))
-        val client = createClient(config.protocol)
-        val connected = client.connect(config)
-        return if (connected) {
-            clients[serverId] = client
-            LOG.info("connected to ${config.name}")
-            Result.success(Unit)
-        } else {
-            Result.failure(RuntimeException("Failed to connect to ${config.name}"))
+        return connectLocks.computeIfAbsent(serverId) { Mutex() }.withLock {
+            val config = getServer(serverId) ?: return@withLock Result.failure(IllegalArgumentException("Server not found"))
+            val client = createClient(config.protocol)
+            val connected = client.connect(config)
+            if (connected) {
+                clients.put(serverId, client)?.let { old -> runCatching { old.disconnect() } }
+                LOG.info("connected to ${config.name}")
+                Result.success(Unit)
+            } else {
+                runCatching { client.disconnect() }
+                Result.failure(RuntimeException("Failed to connect to ${config.name}"))
+            }
         }
     }
 
@@ -128,6 +137,7 @@ class VfsManager {
     }
 
     suspend fun renameServerFile(serverId: String, oldPath: String, newName: String): Boolean = withContext(Dispatchers.IO) {
+        if (!isValidRemoteBasename(newName)) return@withContext false
         val client = clients[serverId] ?: return@withContext false
         val dir = oldPath.substringBeforeLast('/').ifBlank { "/" }
         val newPath = if (dir.endsWith("/")) "$dir$newName" else "$dir/$newName"
@@ -168,7 +178,7 @@ class VfsManager {
             for (track in matched) {
                 when (track.type) {
                     MatchedTrackType.SUBTITLE -> {
-                        val localPath = downloadSubtitle(client, track.file)
+                        val localPath = downloadSubtitle(serverId, client, track.file)
                         if (localPath != null) {
                             subtitleFiles.add(localPath)
                             LOG.info("matched subtitle: ${track.file.name}")
@@ -246,15 +256,14 @@ class VfsManager {
         ioScope.cancel()
     }
 
-    private suspend fun downloadSubtitle(client: VfsClient, file: FileNode): String? {
+    private suspend fun downloadSubtitle(serverId: String, client: VfsClient, file: FileNode): String? {
         return try {
             // A-M18: sanitize the remote filename before joining with cacheDir.
             // A malicious server could return `../../sensitive` and we'd write
             // outside cacheDir. Keep it conservative: [A-Za-z0-9._-] only,
             // preserving the extension. Prefix with the file size to disambiguate.
-            val safeName = sanitizeCacheName(file.name)
-            val localFile = File(cacheDir, safeName)
-            if (!localFile.exists()) {
+            val localFile = File(cacheDir, remoteCacheName(serverId, file))
+            if (!localFile.exists() || localFile.length() != file.size) {
                 client.downloadFile(file.path, localFile.absolutePath)
             }
             localFile.absolutePath
@@ -323,7 +332,18 @@ class VfsManager {
                     props.setProperty("server.$index.basePath", server.basePath)
                     props.setProperty("server.$index.useTls", server.useTls.toString())
                 }
-                FileOutputStream(configFile).use { props.store(it, "WindPlayer Server Configurations") }
+                val tempFile = File(configDir, "${configFile.name}.tmp")
+                FileOutputStream(tempFile).use {
+                    props.store(it, "WindPlayer Server Configurations")
+                    it.fd.sync()
+                }
+                try {
+                    Files.move(tempFile.toPath(), configFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+                } catch (_: AtomicMoveNotSupportedException) {
+                    Files.move(tempFile.toPath(), configFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                } finally {
+                    tempFile.delete()
+                }
                 // SEC-1: tighten to 0600 on POSIX so other local users can't
                 // read hostnames/usernames (and plaintext passwords on non-Windows).
                 // No-op on Windows where DPAPI already protects the cipher blobs

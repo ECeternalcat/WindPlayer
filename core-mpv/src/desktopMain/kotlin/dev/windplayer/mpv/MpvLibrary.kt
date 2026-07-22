@@ -10,6 +10,22 @@ class MpvEventStructure : Structure() {
     @JvmField var data: Pointer? = null
 }
 
+@Structure.FieldOrder("name", "format", "data")
+class MpvEventProperty(pointer: Pointer) : Structure(pointer) {
+    @JvmField var name: Pointer? = null
+    @JvmField var format: Int = 0
+    @JvmField var data: Pointer? = null
+}
+
+@Structure.FieldOrder("reason", "error", "playlist_entry_id", "playlist_insert_id", "playlist_insert_num_entries")
+class MpvEventEndFile(pointer: Pointer) : Structure(pointer) {
+    @JvmField var reason: Int = 0
+    @JvmField var error: Int = 0
+    @JvmField var playlist_entry_id: Long = 0
+    @JvmField var playlist_insert_id: Long = 0
+    @JvmField var playlist_insert_num_entries: Int = 0
+}
+
 interface MpvLibrary : Library {
     companion object {
         val INSTANCE: MpvLibrary by lazy {
@@ -24,7 +40,10 @@ interface MpvLibrary : Library {
             // varies (project root for `gradlew run`, app-desktop/ for IDE runs,
             // build/ for distributions). Try them all.
             val candidates = listOfNotNull(
-                System.getProperty("mpv.lib.path"),  // from jvmArgs
+                System.getProperty("mpv.lib.path"),
+                MpvLibrary::class.java.protectionDomain.codeSource?.location
+                    ?.let { runCatching { java.io.File(it.toURI()).parentFile }.getOrNull() }
+                    ?.let { java.io.File(it, "mpv-dev").absolutePath },
                 "./lib/mpv-dev",                      // cwd = project root
                 "../lib/mpv-dev",                     // cwd = app-desktop
                 "../../lib/mpv-dev"                   // cwd = app-desktop/build/..
@@ -39,7 +58,8 @@ interface MpvLibrary : Library {
             } else {
                 // Last resort: let JNA search by name
                 candidates.forEach { System.setProperty("jna.library.path", it) }
-                Native.load("libmpv-2", MpvLibrary::class.java)
+                val systemLibraryName = if (osName.contains("win")) "libmpv-2" else "mpv"
+                Native.load(systemLibraryName, MpvLibrary::class.java)
             }
         }
     }
@@ -65,5 +85,6 @@ interface MpvLibrary : Library {
 
     fun mpv_request_log_messages(ctx: Pointer, min_level: String): Int
     fun mpv_wait_event(ctx: Pointer, timeout: Double): MpvEventStructure?
+    fun mpv_wakeup(ctx: Pointer)
     fun mpv_free(data: Pointer?)
 }

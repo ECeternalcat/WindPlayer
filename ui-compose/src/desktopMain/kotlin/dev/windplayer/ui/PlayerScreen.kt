@@ -97,8 +97,20 @@ fun PlayerScreen(
     var eofAutoPlayed by remember { mutableStateOf(false) }
     var resumeApplied by remember { mutableStateOf(false) }
     var showCheatsheet by remember { mutableStateOf(false) }
+    val manualTrackResources = remember { mutableStateListOf<PlaybackParams>() }
 
-    LaunchedEffect(player) {
+    DisposableEffect(vfsManager) {
+        onDispose {
+            val manager = vfsManager
+            if (manager != null) manualTrackResources.forEach(manager::releasePlayback)
+            manualTrackResources.clear()
+        }
+    }
+
+    // The MpvPlayer instance lives for the application, while playback params
+    // change for every episode. Restart the collector for each loaded path so
+    // EOF, resume and external-track handling cannot retain the first episode.
+    LaunchedEffect(player, initialFilePath) {
         // Register observers for low-frequency properties (L12 finally lets these
         // actually fire). The high-frequency `time-pos` stays on a 200ms polling
         // loop below because emitting it as an event ~60 times/sec would flood
@@ -118,7 +130,7 @@ fun PlayerScreen(
                 if (!fileLoaded) continue
                 try {
                     if (!isSeeking) {
-                        val pos = player.getPropertyDouble("time-pos")
+                        val pos = player.getPropertyDouble("time-pos") ?: 0.0
                         if (pos >= 0) position = pos
                     }
                 } catch (_: Exception) {}
@@ -140,11 +152,11 @@ fun PlayerScreen(
                         // case mpv's first observer emission missed (it shouldn't,
                         // but a defensive read here avoids UI appearing stale).
                         try {
-                            val dur = player.getPropertyDouble("duration")
+                            val dur = player.getPropertyDouble("duration") ?: 0.0
                             if (dur > 0) duration = dur
-                            volume = player.getPropertyLong("volume")
+                            volume = player.getPropertyLong("volume") ?: 100L
                             isMuted = player.getPropertyString("mute") == "yes"
-                            speed = player.getPropertyDouble("speed")
+                            speed = player.getPropertyDouble("speed") ?: 1.0
                         } catch (_: Exception) {}
                         val fileName = player.getPropertyString("filename") ?: "unknown"
                         statusText = fileName
@@ -570,7 +582,8 @@ fun PlayerScreen(
                 vfsManager = vfsManager,
                 serverId = playbackServerId,
                 dirPath = playbackDirPath,
-                isLocal = playbackIsLocal
+                isLocal = playbackIsLocal,
+                onPlaybackResourceCreated = { manualTrackResources.add(it) }
             )
         }
 

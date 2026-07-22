@@ -57,6 +57,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -126,6 +129,9 @@ fun MobilePlayerScreen(
     // the reload runs AFTER the surface is re-bound (avoids loadfile racing
     // attachSurface → black video with audio only).
     val pendingNetworkResume = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+    val loadGeneration = remember { AtomicLong(0) }
+    val loadMutex = remember { Mutex() }
+    val lifecyclePausedPlayback = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
 
     val audioManager = remember { context.getSystemService(android.content.Context.AUDIO_SERVICE) as AudioManager }
     var hasWriteSettings by remember { mutableStateOf(Settings.System.canWrite(context)) }
@@ -154,10 +160,13 @@ fun MobilePlayerScreen(
     }
 
     suspend fun resolveAndLoad(path: String) {
+        val generation = loadGeneration.incrementAndGet()
         // H13: openFileDescriptor and resolveUrl perform disk + network I/O
         // (SSH connect for SFTP). Must run on Dispatchers.IO, never Main,
         // otherwise StrictMode flags it and we risk ANR.
         withContext(Dispatchers.IO) {
+          loadMutex.withLock {
+            if (generation != loadGeneration.get()) return@withLock
             // Capture the resume position BEFORE the resets below clear it, so we
             // can hand it to mpv's `start` option. Seeking via `time-pos` after
             // FileLoaded races the demuxer on HTTP streams and is silently lost
@@ -199,6 +208,14 @@ fun MobilePlayerScreen(
             } else if (serverConfig != null) {
                 try { MobileVfsManager.resolveUrl(serverConfig, path) } catch (_: Exception) { path }
             } else { path }
+
+            if (generation != loadGeneration.get()) {
+                try { currentPfd?.close() } catch (_: Exception) {}
+                currentPfd = null
+                streamSessionIds.forEach { streamProxy.closeSession(it) }
+                streamSessionIds = emptyList()
+                return@withLock
+            }
 
             // Larger demuxer cache for network streams so seeks stay within
             // the buffered region instead of re-requesting from SFTP.
@@ -260,7 +277,7 @@ fun MobilePlayerScreen(
                                 android.util.Log.w("MpvPlayer", "subtitle download failed: ${track.file.name}")
                             }
                         }
-                        if (subFiles.isNotEmpty()) {
+                        if (subFiles.isNotEmpty() && generation == loadGeneration.get()) {
                             pendingSubtitles = subFiles
                             tryAddSubtitles()
                         }
@@ -292,13 +309,14 @@ fun MobilePlayerScreen(
                             }
                             if (cached.exists()) subFiles.add(cached.absolutePath)
                         }
-                        if (subFiles.isNotEmpty()) {
+                        if (subFiles.isNotEmpty() && generation == loadGeneration.get()) {
                             pendingSubtitles = subFiles
                             tryAddSubtitles()
                         }
                     } catch (_: Exception) {}
                 }
             }
+          }
         }
     }
 
@@ -311,7 +329,7 @@ fun MobilePlayerScreen(
      * H15: caller MUST be on Dispatchers.IO — screenshot-to-file is a
      * synchronous JNI call (JPEG encode + disk write, ~100ms–1s).
      */
-    fun captureThumbnailForPath(path: String) {
+    suspend fun captureThumbnailForPath(path: String) {
         try {
             // M8: use SHA-256 instead of String.hashCode() (32-bit, collisions
             // are easy across many history entries) to avoid thumbnail files
@@ -391,10 +409,19 @@ fun MobilePlayerScreen(
         val lifecycleObserver = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_PAUSE -> {
-                    try { player.setProperty("pause", "yes") } catch (_: Exception) {}
+                    if (!lifecyclePausedPlayback.get()) {
+                        val wasPlaying = fileLoaded && try {
+                            player.getPropertyString("pause") != "yes"
+                        } catch (_: Exception) { isPlaying }
+                        lifecyclePausedPlayback.set(wasPlaying)
+                        if (wasPlaying) {
+                            try { player.setProperty("pause", "yes") } catch (_: Exception) {}
+                        }
+                    }
                 }
                 Lifecycle.Event.ON_RESUME -> {
                     hasWriteSettings = Settings.System.canWrite(context)
+                    if (!lifecyclePausedPlayback.compareAndSet(true, false)) return@LifecycleEventObserver
                     if (fileLoaded && serverConfig != null) {
                         // Network streams need a reload (StreamProxy session dies
                         // in background), but loadfile must run AFTER the surface
@@ -402,7 +429,7 @@ fun MobilePlayerScreen(
                         // consumed in onSurfaceReattached (surfaceCreated).
                         // Rotation doesn't reach ON_RESUME, so it won't reload.
                         pendingNetworkResume.set(true)
-                    } else {
+                    } else if (fileLoaded) {
                         try { player.setProperty("pause", "no") } catch (_: Exception) {}
                     }
                 }
@@ -459,8 +486,8 @@ fun MobilePlayerScreen(
                     fileLoaded = true
                     isPlaying = true
                     try {
-                        duration = player.getPropertyDouble("duration")
-                        speed = player.getPropertyDouble("speed")
+                        duration = player.getPropertyDouble("duration") ?: 0.0
+                        speed = player.getPropertyDouble("speed") ?: 1.0
                     } catch (_: Exception) {}
                     // Sync volume display from system media volume.
                     val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
@@ -500,7 +527,7 @@ fun MobilePlayerScreen(
                         try {
                             val sid = player.getPropertyString("sid")
                             if (sid == null || sid == "no" || sid.isEmpty()) {
-                                val count = player.getPropertyLong("track-list/count").toInt()
+                                val count = player.getPropertyLong("track-list/count")?.toInt() ?: 0
                                 for (i in 0 until count) {
                                     val type = player.getPropertyString("track-list/$i/type") ?: ""
                                     if (type == "sub") {
@@ -560,6 +587,17 @@ fun MobilePlayerScreen(
         Log.i("MobilePlayerScreen", "Subtitle mount collector started (fileLoaded=true)")
         dev.windplayer.translate.TranslateService.pendingSubtitleMount.collect { request ->
             if (request == null) return@collect
+            val currentPath = directoryVideos.getOrNull(currentIdx)?.path ?: file.path
+            val currentIdentity = dev.windplayer.translate.normalizeSourceIdentity(
+                currentPath,
+                serverConfig?.id
+            )
+            if (request.sourceIdentity != currentIdentity ||
+                request.playbackGeneration != loadGeneration.get()
+            ) {
+                Log.i("MobilePlayerScreen", "Ignoring subtitle mount for stale source/task ${request.taskId}")
+                return@collect
+            }
             Log.i("MobilePlayerScreen", "Subtitle mount requested: primary=${request.primaryPath}, secondary=${request.secondaryPath}, dual=${request.dualPath}, mode=$subtitleDisplayMode")
             try {
                 when (subtitleDisplayMode) {
@@ -597,7 +635,7 @@ fun MobilePlayerScreen(
             }
             // Clear the bus so the same SRT doesn't mount twice on
             // recomposition (e.g. after a brief fileLoaded=false→true cycle).
-            dev.windplayer.translate.TranslateService.pendingSubtitleMount.value = null
+            dev.windplayer.translate.TranslateService.pendingSubtitleMount.compareAndSet(request, null)
         }
     }
 
@@ -607,7 +645,7 @@ fun MobilePlayerScreen(
             delay(200)
             try {
                 isPlaying = player.getPropertyString("pause") != "yes"
-                if (!isDragging && !isScrubbing) position = player.getPropertyDouble("time-pos")
+                if (!isDragging && !isScrubbing) position = player.getPropertyDouble("time-pos") ?: 0.0
 
                 val curPath = directoryVideos.getOrNull(currentIdx)?.path
 
@@ -619,7 +657,7 @@ fun MobilePlayerScreen(
                         try {
                             val sid = player.getPropertyString("sid")
                             val aid = player.getPropertyString("aid")
-                            val spd = player.getPropertyDouble("speed")
+                            val spd = player.getPropertyDouble("speed") ?: 1.0
                             onPlaybackStateUpdate(curPath, sid, aid, spd)
                         } catch (_: Exception) {}
                     }
@@ -658,8 +696,8 @@ fun MobilePlayerScreen(
 
     fun seek(delta: Double) {
         try {
-            val pos = player.getPropertyDouble("time-pos")
-            val dur = player.getPropertyDouble("duration")
+            val pos = player.getPropertyDouble("time-pos") ?: 0.0
+            val dur = player.getPropertyDouble("duration") ?: 0.0
             val target = (pos + delta).coerceIn(0.0, dur)
             player.setProperty("time-pos", "%.3f".format(target))
             position = target
@@ -772,7 +810,7 @@ fun MobilePlayerScreen(
                             directionLocked = true
                             if (kotlin.math.abs(dx) > kotlin.math.abs(dy)) {
                                 mode = 0 // horizontal = seek
-                                startPos = try { player.getPropertyDouble("time-pos") } catch (_: Exception) { 0.0 }
+                                startPos = try { player.getPropertyDouble("time-pos") ?: 0.0 } catch (_: Exception) { 0.0 }
                             } else {
                                 mode = if (startX < size.width / 2) 1 else 2
                                 if (mode == 1) {
@@ -792,7 +830,7 @@ fun MobilePlayerScreen(
                             0 -> { // horizontal seek: full screen width = ±30s
                                 val deltaSec = (dx / size.width * 60.0).coerceIn(-30.0, 30.0)
                                 try {
-                                    val dur = player.getPropertyDouble("duration")
+                                    val dur = player.getPropertyDouble("duration") ?: 0.0
                                     val target = (startPos + deltaSec).coerceIn(0.0, dur)
                                     position = target
                                     player.setProperty("time-pos", "%.3f".format(target))
@@ -995,12 +1033,17 @@ fun MobilePlayerScreen(
                                     if (dev.windplayer.translate.TranslateService.isRunning) {
                                         osdText = "Task already running"
                                     } else {
-                                        val dur = try { player.getPropertyDouble("duration") } catch (_: Exception) { 0.0 }
+                                        val dur = try { player.getPropertyDouble("duration") ?: 0.0 } catch (_: Exception) { 0.0 }
                                         dev.windplayer.translate.TranslationStarter.showChoice(
                                             context = context,
-                                            videoTitle = file.name,
-                                            sourceUrl = file.path,
-                                            duration = dur
+                                            videoTitle = directoryVideos.getOrNull(currentIdx)?.name ?: file.name,
+                                            sourceUrl = directoryVideos.getOrNull(currentIdx)?.path ?: file.path,
+                                            sourceIdentity = dev.windplayer.translate.normalizeSourceIdentity(
+                                                directoryVideos.getOrNull(currentIdx)?.path ?: file.path,
+                                                serverConfig?.id
+                                            ),
+                                            duration = dur,
+                                            playbackGeneration = loadGeneration.get()
                                         )
                                     }
                                 }) {
@@ -1194,7 +1237,7 @@ private fun TrackSelectionContent(
             if (isSubTab) {
                 secondaryId = try { player.getPropertyString("secondary-sid") ?: "" } catch (_: Exception) { "" }
             }
-            val count = try { player.getPropertyLong("track-list/count").toInt() } catch (_: Exception) { 0 }
+            val count = try { player.getPropertyLong("track-list/count")?.toInt() ?: 0 } catch (_: Exception) { 0 }
             val list = mutableListOf<TrackItem>()
             for (i in 0 until count) {
                 val type = try { player.getPropertyString("track-list/$i/type") ?: "" } catch (_: Exception) { "" }
@@ -1327,7 +1370,7 @@ private fun fmt(d: Double): String = if (d >= 0) "+%ds".format(d.toInt()) else "
  */
 private fun setSecondarySubtitleToLastExternal(player: MpvPlayer) {
     try {
-        val count = player.getPropertyLong("track-list/count").toInt()
+        val count = player.getPropertyLong("track-list/count")?.toInt() ?: 0
         for (i in count - 1 downTo 0) {
             val type = player.getPropertyString("track-list/$i/type")
             if (type != "sub") continue

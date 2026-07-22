@@ -15,6 +15,12 @@ import kotlin.test.assertNull
 class ServerConfigTest {
 
     @Test
+    fun `bareHost parses bracketed and unbracketed IPv6 literals`() {
+        assertEquals("2001:db8::1", ServerConfig("1", "v6", VfsProtocol.WEBDAV, "https://[2001:db8::1]:8443/path").bareHost)
+        assertEquals("2001:db8::2", ServerConfig("2", "v6", VfsProtocol.SFTP, "2001:db8::2").bareHost)
+    }
+
+    @Test
     fun `bareHost strips https prefix`() {
         val config = ServerConfig(
             id = "1", name = "test", protocol = VfsProtocol.WEBDAV,

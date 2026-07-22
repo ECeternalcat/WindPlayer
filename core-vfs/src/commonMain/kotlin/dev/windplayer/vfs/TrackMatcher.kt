@@ -13,7 +13,6 @@ enum class MatchConfidence { EXACT, STRUCTURED, FUZZY }
 private val AUDIO_EXTENSIONS = setOf("mka", "flac", "dts", "ac3", "wav", "ogg", "opus", "aac", "mp3", "ape", "wma", "truehd", "thd")
 
 private val EPISODE_PATTERNS = listOf(
-    Regex("""[Ss](\d{1,2})\s*[Ee](\d{1,4})"""),
     Regex("""[Ee][Pp](\d{1,4})"""),
     Regex("""\b(\d{1,4})\s*\["""),
     Regex("""\s[-‐–]\s*(\d{1,4})\s*(?:\[|$)"""),
@@ -28,7 +27,7 @@ fun matchExternalTracks(
     val allCandidates = siblings + subsDirFiles
     val videoBase = videoNode.name.substringBeforeLast('.')
     val videoExt = videoNode.name.substringAfterLast('.').lowercase()
-    val videoEpisodeFeature = extractEpisodeFeature(videoNode.name)
+    val videoEpisodeFeature = extractEpisodeFeature(videoBase)
 
     val subs = mutableListOf<MatchedTrack>()
     val audios = mutableListOf<MatchedTrack>()
@@ -52,7 +51,7 @@ fun matchExternalTracks(
         }
 
         if (videoEpisodeFeature != null) {
-            val fileEpisode = extractEpisodeFeature(file.name)
+            val fileEpisode = extractEpisodeFeature(fileBase)
             if (fileEpisode == videoEpisodeFeature) {
                 val type = if (isSub) MatchedTrackType.SUBTITLE else MatchedTrackType.AUDIO
                 val list = if (isSub) subs else audios
@@ -77,30 +76,32 @@ private fun exactBaseMatch(videoBase: String, fileBase: String): Boolean {
     val vLower = videoBase.lowercase()
     val fLower = fileBase.lowercase()
     if (fLower == vLower) return true
-    if (fLower.startsWith("$vLower.") || fLower.startsWith("$vLower ")) return true
-    val vClean = vLower.replace(Regex("""[\s._-]"""), "")
-    val fClean = fLower.replace(Regex("""[\s._-]"""), "")
-    return fClean.startsWith(vClean)
+    return listOf('.', ' ', '_', '-').any { fLower.startsWith("$vLower$it") }
 }
 
-private fun extractEpisodeFeature(filename: String): String? {
+private data class EpisodeFeature(val title: String, val season: Int?, val episode: Int)
+
+private fun extractEpisodeFeature(filename: String): EpisodeFeature? {
+    val seasonEpisode = Regex("""(?i)S(\d{1,2})\s*E(\d{1,4})""").find(filename)
+    if (seasonEpisode != null) {
+        return EpisodeFeature(
+            normalizeTitle(filename.substring(0, seasonEpisode.range.first)),
+            seasonEpisode.groupValues[1].toIntOrNull() ?: return null,
+            seasonEpisode.groupValues[2].toIntOrNull() ?: return null
+        )
+    }
     for (pattern in EPISODE_PATTERNS) {
         val match = pattern.find(filename)
         if (match != null) {
-            val season = match.groupValues.getOrNull(1)
-            val episode = match.groupValues.getOrNull(2)
-            // M1: compare numerically, not as strings. "1" != "01" as strings,
-            // so S1E1 (season=1, ep=1) would bypass the S##E## branch and fall
-            // through to EP001 — breaking structured matching against S01E01 subs.
-            if (episode != null && season != null && season.toIntOrNull() != episode.toIntOrNull()) {
-                return "S${season.padStart(2, '0')}E${episode.padStart(2, '0')}"
-            }
-            val ep = match.groupValues[1]
-            return "EP${ep.padStart(3, '0')}"
+            val episode = match.groupValues[1].toIntOrNull() ?: return null
+            return EpisodeFeature(normalizeTitle(filename.substring(0, match.range.first)), null, episode)
         }
     }
     return null
 }
+
+private fun normalizeTitle(title: String): String =
+    title.lowercase().trim(' ', '.', '_', '-').replace(Regex("""[\s._-]+"""), "")
 
 private fun similarity(a: String, b: String): Double {
     if (a == b) return 1.0

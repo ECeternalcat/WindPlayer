@@ -20,6 +20,26 @@ android {
         }
     }
 
+    val releaseStoreFile = System.getenv("WINDPLAYER_KEYSTORE_FILE")
+    val releaseStorePassword = System.getenv("WINDPLAYER_KEYSTORE_PASSWORD")
+    val releaseKeyAlias = System.getenv("WINDPLAYER_KEY_ALIAS")
+    val releaseKeyPassword = System.getenv("WINDPLAYER_KEY_PASSWORD")
+    if (listOf(releaseStoreFile, releaseStorePassword, releaseKeyAlias, releaseKeyPassword).all { !it.isNullOrBlank() }) {
+        signingConfigs {
+            create("release") {
+                storeFile = file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+        buildTypes {
+            getByName("release") {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
+    }
+
     buildFeatures {
         compose = true
     }
@@ -68,12 +88,13 @@ dependencies {
     // Whisper ASR engine (pure native C++ + JNI bridge, arm64-v8a only).
     implementation(files("libs/whisper-android.aar"))
 
-    // Compose: CMP 1.9.0 embeds Compose UI 1.7.x. The BOM 2024.10.01 maps to
-    // the same 1.7.x line, so they are aligned. When upgrading CMP, the BOM
-    // MUST be updated to the matching Compose version to avoid ABI drift.
+    // Compose Multiplatform is 1.11.1; this Android app uses the AndroidX BOM
+    // for its direct, versionless AndroidX Compose dependencies.
     implementation(platform("androidx.compose:compose-bom:2024.10.01"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material:material-icons-extended")
+
+    testImplementation("junit:junit:4.13.2")
 }

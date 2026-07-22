@@ -33,8 +33,11 @@ class TranslationManager(
     private val context: Context,
     private val audioSourceUrl: () -> String,
     private val audioDuration: () -> Double,
+    private val sourceIdentity: String,
     private val doTranslate: Boolean = true,
-    private val audioTrackIndex: Int = -1
+    private val audioTrackIndex: Int = -1,
+    private val taskId: String,
+    private val playbackGeneration: Long
 ) {
     private val _state = MutableStateFlow<TaskState>(TaskState.Queued)
     val state: StateFlow<TaskState> = _state.asStateFlow()
@@ -134,17 +137,21 @@ class TranslationManager(
             val audioResult = extractor.extractPcmAudio(sourceUrl, duration, audioTrackIndex) { progress ->
                 _state.value = TaskState.Transcribing(0.1f + progress * 0.3f)
             }
-            val audioData = audioResult.getOrElse { e ->
+            val audio = audioResult.getOrElse { e ->
                 _state.value = TaskState.Failed.AsrError("Audio extraction failed: ${e.message}")
                 return
             }
-
-            // 4. Run Whisper ASR.
-            _state.value = TaskState.Transcribing(0.4f)
-            val whisperResult = whisperEngine!!.transcribe(audioData)
-            val segments = whisperResult.getOrElse { e ->
-                _state.value = TaskState.Failed.AsrError("ASR failed: ${e.message}")
-                return
+            val segments = audio.use {
+                // 4. Run Whisper ASR. The file-backed audio is removed on every
+                // success, failure, and cancellation path.
+                _state.value = TaskState.Transcribing(0.4f)
+                val whisperResult = whisperEngine!!.transcribeChunked(it) { progress ->
+                    _state.value = TaskState.Transcribing(0.4f + progress * 0.5f)
+                }
+                whisperResult.getOrElse { e ->
+                    _state.value = TaskState.Failed.AsrError("ASR failed: ${e.message}")
+                    return@use emptyList()
+                }
             }
 
             if (segments.isEmpty()) {
@@ -168,6 +175,10 @@ class TranslationManager(
                 Log.w(TAG, "Skipping LLM translation — writing original-language subtitles only")
                 val srtFile = writeSrt(segments, sourceUrl)
                 TranslateService.pendingSubtitleMount.value = TranslateService.SubtitleMountRequest(
+                    taskId = taskId,
+                    sourceUrl = sourceUrl,
+                    sourceIdentity = sourceIdentity,
+                    playbackGeneration = playbackGeneration,
                     primaryPath = srtFile.absolutePath
                 )
                 _state.value = TaskState.Completed(srtFile.absolutePath)
@@ -241,6 +252,10 @@ class TranslationManager(
             // Publish all three paths so MobilePlayerScreen can mount the
             // appropriate one(s) based on the user's display-mode setting.
             TranslateService.pendingSubtitleMount.value = TranslateService.SubtitleMountRequest(
+                taskId = taskId,
+                sourceUrl = sourceUrl,
+                sourceIdentity = sourceIdentity,
+                playbackGeneration = playbackGeneration,
                 primaryPath = translatedFile.absolutePath,
                 secondaryPath = sourceFile.absolutePath,
                 dualPath = dualFile.absolutePath

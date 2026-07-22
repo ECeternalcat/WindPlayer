@@ -3,8 +3,76 @@ package dev.windplayer.translate
 import android.util.Log
 import com.whispercpp.whisper.WhisperContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
+
+internal data class WhisperWindow(val startSample: Long, val endSample: Long)
+
+internal fun planWhisperWindows(
+    totalSamples: Long,
+    chunkSeconds: Int = 120,
+    overlapSeconds: Int = 10,
+    sampleRate: Int = 16_000
+): List<WhisperWindow> {
+    require(chunkSeconds > overlapSeconds && overlapSeconds >= 0)
+    if (totalSamples <= 0) return emptyList()
+    val chunk = chunkSeconds.toLong() * sampleRate
+    val step = chunk - overlapSeconds.toLong() * sampleRate
+    return buildList {
+        var start = 0L
+        while (start < totalSamples) {
+            add(WhisperWindow(start, minOf(start + chunk, totalSamples)))
+            start += step
+        }
+    }
+}
+
+internal fun mergeWhisperSegments(
+    chunks: List<Pair<Long, List<SubtitleSegment>>>,
+    overlapSeconds: Int = 10
+): List<SubtitleSegment> {
+    val merged = mutableListOf<SubtitleSegment>()
+    for ((offsetMs, localSegments) in chunks) {
+        val ownershipStart = if (merged.isEmpty()) 0L else offsetMs + overlapSeconds * 500L
+        for (local in localSegments) {
+            val segment = local.copy(startMs = local.startMs + offsetMs, endMs = local.endMs + offsetMs)
+            if (segment.endMs <= ownershipStart) continue
+            val duplicateIndex = merged.indexOfLast { existing ->
+                minOf(existing.endMs, segment.endMs) > maxOf(existing.startMs, segment.startMs) &&
+                    whisperTextSimilarity(existing.originalText, segment.originalText) >= 0.85
+            }
+            if (duplicateIndex >= 0) {
+                if (segment.originalText.length > merged[duplicateIndex].originalText.length) {
+                    merged[duplicateIndex] = segment
+                }
+            } else {
+                merged.add(segment)
+            }
+        }
+    }
+    return merged.sortedWith(compareBy<SubtitleSegment> { it.startMs }.thenBy { it.endMs })
+        .mapIndexed { index, segment -> segment.copy(id = index) }
+}
+
+private fun whisperTextSimilarity(a: String, b: String): Double {
+    val left = a.lowercase().replace(Regex("[\\p{Punct}\\s]+"), "")
+    val right = b.lowercase().replace(Regex("[\\p{Punct}\\s]+"), "")
+    if (left == right) return 1.0
+    if (left.isEmpty() || right.isEmpty()) return 0.0
+    var previous = IntArray(right.length + 1) { it }
+    for (i in left.indices) {
+        val current = IntArray(right.length + 1)
+        current[0] = i + 1
+        for (j in right.indices) current[j + 1] = minOf(
+            current[j] + 1, previous[j + 1] + 1,
+            previous[j] + if (left[i] == right[j]) 0 else 1
+        )
+        previous = current
+    }
+    return 1.0 - previous[right.length].toDouble() / maxOf(left.length, right.length)
+}
 
 /**
  * Thin Android wrapper around the Whisper JNI AAR (`com.whispercpp.whisper`).
@@ -84,6 +152,32 @@ class WhisperEngine {
             Result.failure(e)
         }
     }
+
+    suspend fun transcribeChunked(
+        audio: ExtractedAudio,
+        chunkSeconds: Int = 120,
+        overlapSeconds: Int = 10,
+        onProgress: (Float) -> Unit = {}
+    ): Result<List<SubtitleSegment>> = withContext(Dispatchers.Default) {
+        require(chunkSeconds > overlapSeconds && overlapSeconds >= 0)
+        val windows = planWhisperWindows(audio.totalSamples, chunkSeconds, overlapSeconds)
+        val chunks = mutableListOf<Pair<Long, List<SubtitleSegment>>>()
+        try {
+            for ((index, window) in windows.withIndex()) {
+                currentCoroutineContext().ensureActive()
+                val local = transcribe(audio.readChunk(window.startSample, (window.endSample - window.startSample).toInt())).getOrThrow()
+                chunks += window.startSample * 1000L / 16_000L to local
+                onProgress((index + 1).toFloat() / windows.size)
+            }
+            Result.success(mergeWhisperSegments(chunks, overlapSeconds))
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Chunked transcription failed", e)
+            Result.failure(e)
+        }
+    }
+
 
     /**
      * Free the native Whisper context. Idempotent.

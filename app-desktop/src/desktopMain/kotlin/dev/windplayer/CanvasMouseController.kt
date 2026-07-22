@@ -66,7 +66,7 @@ internal class CanvasMouseController(
 
                 when (dragMode) {
                     DRAG_SEEK -> {
-                        val dur = try { player.getPropertyDouble("duration") } catch (_: Exception) { 0.0 }
+                        val dur = try { player.getPropertyDouble("duration") ?: 0.0 } catch (_: Exception) { 0.0 }
                         val maxPos = if (dur > 0) dur else Double.MAX_VALUE
                         val newPos = (dragStartValue + dx).coerceIn(0.0, maxPos)
                         try { player.command("seek", "%.3f".format(newPos), "absolute") } catch (_: Exception) {}
@@ -102,9 +102,9 @@ internal class CanvasMouseController(
                     dragStartX = e.x
                     dragStartY = e.y
                     dragStartValue = when (dragMode) {
-                        DRAG_SEEK -> try { player.getPropertyDouble("time-pos") } catch (_: Exception) { 0.0 }
-                        DRAG_VOLUME -> try { player.getPropertyLong("volume").toDouble() } catch (_: Exception) { 100.0 }
-                        DRAG_BRIGHTNESS -> try { player.getPropertyLong("brightness").toDouble() } catch (_: Exception) { 0.0 }
+                        DRAG_SEEK -> try { player.getPropertyDouble("time-pos") ?: 0.0 } catch (_: Exception) { 0.0 }
+                        DRAG_VOLUME -> try { player.getPropertyLong("volume")?.toDouble() ?: 100.0 } catch (_: Exception) { 100.0 }
+                        DRAG_BRIGHTNESS -> try { player.getPropertyLong("brightness")?.toDouble() ?: 0.0 } catch (_: Exception) { 0.0 }
                         else -> 0.0
                     }
                     dragOccurred = false
@@ -153,7 +153,7 @@ internal class CanvasMouseController(
         videoCanvas.addMouseWheelListener { e ->
             if (layoutManager.currentScreen == dev.windplayer.ui.AppScreen.PLAYER) {
                 val delta = if (e.wheelRotation < 0) 5 else -5
-                val vol = player.getPropertyLong("volume")
+                val vol = player.getPropertyLong("volume") ?: 100L
                 val newVol = (vol + delta).coerceIn(0, 100)
                 player.setProperty("volume", newVol.toString())
                 osdEvents.tryEmit("${I18n.get("osd_vol")}: $newVol%")

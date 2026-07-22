@@ -166,6 +166,7 @@ fun ServerBrowseScreen(
                                     context = context,
                                     videoTitle = file.name,
                                     sourceUrl = url,
+                                    sourceIdentity = dev.windplayer.translate.normalizeSourceIdentity(file.path, server.id),
                                     duration = 0.0
                                 )
                             }

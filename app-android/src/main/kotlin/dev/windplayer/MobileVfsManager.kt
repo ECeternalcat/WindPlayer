@@ -6,6 +6,8 @@ import dev.windplayer.vfs.ServerConfig
 import dev.windplayer.vfs.VfsProtocol
 import dev.windplayer.vfs.VfsClient
 import java.io.File
+import dev.windplayer.vfs.isValidRemoteBasename
+import dev.windplayer.vfs.remoteCacheName
 
 object MobileVfsManager {
 
@@ -42,8 +44,10 @@ object MobileVfsManager {
      * in-flight StreamProxy session for the main video.
      */
     suspend fun downloadAuxFile(server: ServerConfig, file: FileNode, cacheDir: File): File? {
-        val safeName = sanitizeCacheName(file.name)
-        val localFile = File(cacheDir, safeName)
+        val serverIdentity = server.id.ifBlank {
+            "${server.protocol}:${server.bareHost}:${server.defaultPort()}"
+        }
+        val localFile = File(cacheDir, remoteCacheName(serverIdentity, file))
         // M22: verify cached file isn't a zero-byte leftover from an interrupted
         // download. Without this, a corrupted cache entry permanently prevents
         // the subtitle from loading.
@@ -89,6 +93,7 @@ object MobileVfsManager {
     }
 
     suspend fun renameRemoteFile(server: ServerConfig, oldPath: String, newName: String): Boolean {
+        if (!isValidRemoteBasename(newName)) return false
         val client = createClient(server)
         return try {
             client.connect(server)

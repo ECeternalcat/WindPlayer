@@ -72,6 +72,7 @@ fun MobileApp(
     var playServerConfig by remember { mutableStateOf<ServerConfig?>(null) }
     var directoryVideos by remember { mutableStateOf<List<FileNode>>(emptyList()) }
     var localSiblings by remember { mutableStateOf<List<FileNode>>(emptyList()) }
+    var playTreeUriString by remember { mutableStateOf<String?>(null) }
     var playIndex by remember { mutableStateOf(0) }
     var resumePosition by remember { mutableStateOf(0.0) }
     var resumeSid by remember { mutableStateOf<String?>(null) }
@@ -197,6 +198,7 @@ fun MobileApp(
         )
         pendingFile = fileNode
         playServerConfig = null
+        playTreeUriString = null
         directoryVideos = listOf(fileNode)
         localSiblings = emptyList()
         playIndex = 0
@@ -296,7 +298,7 @@ fun MobileApp(
                 onFilePlayed = { playedFile ->
                     val proto = playServerConfig?.protocol ?: VfsProtocol.LOCAL
                     val sid = playServerConfig?.id
-                    val treeUri = if (proto == VfsProtocol.LOCAL) SafHelper.loadTreeUri(context)?.toString() else null
+                    val treeUri = if (proto == VfsProtocol.LOCAL) playTreeUriString else null
                     val parentDocId = if (proto == VfsProtocol.LOCAL) SafPlaylistBuilder.extractParentDocId(playedFile.path) else null
                     // H16: HistoryStore.add does SharedPreferences load + commit on
                     // the calling thread. Dispatch to IO to avoid main-thread jank
@@ -322,11 +324,10 @@ fun MobileApp(
                  onBack = {
                      try { player.command("stop") } catch (_: Exception) {}
                      try { player.detachSurface() } catch (_: Exception) {}
-                     // H14: dispose off the main thread to avoid ANR during teardown.
-                     teardownScope.launch {
-                         try { player.dispose() } catch (_: Exception) {}
-                     }
-                    pendingFile = null
+                     // Keep the process-level JNI player alive while the Activity
+                     // remains composed. Re-entering playback can safely reattach
+                     // a Surface without racing an asynchronous native destroy.
+                     pendingFile = null
                     directoryVideos = emptyList()
                     // Reload history to pick up thumbnails generated during playback.
                     history = HistoryStore.load(context)
@@ -374,6 +375,7 @@ fun MobileApp(
                     val idx = vids.indexOfFirst { it.path == file.path }
                     pendingFile = file
                     playServerConfig = activeServer
+                    playTreeUriString = null
                     directoryVideos = vids
                     playIndex = if (idx >= 0) idx else 0
                     resumePosition = 0.0
@@ -421,13 +423,14 @@ fun MobileApp(
                     }
                 }
                 "browser" -> FileBrowserScreen(
-            onFilePlay = { file, allFiles ->
+            onFilePlay = { file, allFiles, treeUriString ->
                 val allVideos = allFiles.filter { it.isVideo() }
                 val idx = allVideos.indexOfFirst { it.path == file.path }
                 pendingFile = file
                 directoryVideos = allVideos
                 localSiblings = allFiles
                 playServerConfig = null
+                playTreeUriString = treeUriString
                 playIndex = if (idx >= 0) idx else 0
                 resumePosition = 0.0
                 resumeSid = null
@@ -472,6 +475,7 @@ fun MobileApp(
                         }
                         pendingFile = fileNode
                         playServerConfig = null
+                        playTreeUriString = entry.treeUriString
                         directoryVideos = siblings
                         localSiblings = siblings
                         playIndex = idx

@@ -81,25 +81,57 @@ fun buildUrlWithCredentials(
     defaultPort: Int,
     path: String
 ): String {
-    val userInfo = if (username.isNotBlank()) {
-        // SEC-7: URLEncoder.encode is an HTML form encoder — it emits `+` for
-        // space, but RFC 3986 userinfo requires `%20`. A password containing a
-        // space would become `my+pass`, which some servers decode as a literal
-        // `+`, breaking auth or matching the wrong account. Post-replace to
-        // the RFC 3986 encoding.
-        val encodedUser = java.net.URLEncoder.encode(username, "UTF-8").replace("+", "%20")
-        if (password.isNotBlank()) {
-            val encodedPass = java.net.URLEncoder.encode(password, "UTF-8").replace("+", "%20")
-            "$encodedUser:$encodedPass@$host"
-        } else {
-            "$encodedUser@$host"
-        }
+    val effectivePort = if (port == defaultPort) -1 else port
+    val normalizedPath = "/${path.trimStart('/')}"
+    val authorityAndPath = java.net.URI(null, null, host, effectivePort, normalizedPath, null, null)
+        .toASCIIString()
+        .removePrefix("//")
+    if (username.isBlank()) return "$scheme://$authorityAndPath"
+
+    val encodedUser = java.net.URLEncoder.encode(username, "UTF-8").replace("+", "%20")
+    val userInfo = if (password.isBlank()) {
+        encodedUser
     } else {
-        host
+        val encodedPassword = java.net.URLEncoder.encode(password, "UTF-8").replace("+", "%20")
+        "$encodedUser:$encodedPassword"
     }
-    val portPart = if (port != defaultPort) ":$port" else ""
-    val cleanPath = if (path.startsWith("/")) path.removePrefix("/") else path
-    return "$scheme://$userInfo$portPart/$cleanPath"
+    return "$scheme://$userInfo@$authorityAndPath"
+}
+
+internal fun hostForUrl(host: String): String = if (':' in host && !host.startsWith('[')) "[$host]" else host
+
+internal fun parseByteRange(value: String, fileSize: Long): LongRange? {
+    if (fileSize < 0) return null
+    val match = Regex("""bytes=(\d*)-(\d*)""").matchEntire(value) ?: return null
+    val startText = match.groupValues[1]
+    val endText = match.groupValues[2]
+    if (startText.isEmpty() && endText.isEmpty()) return null
+    if (fileSize == 0L) return null
+
+    if (startText.isEmpty()) {
+        val suffixLength = endText.toLongOrNull()?.takeIf { it > 0 } ?: return null
+        return (fileSize - suffixLength).coerceAtLeast(0)..<fileSize
+    }
+
+    val start = startText.toLongOrNull() ?: return null
+    val requestedEnd = if (endText.isEmpty()) fileSize - 1 else endText.toLongOrNull() ?: return null
+    if (start >= fileSize || requestedEnd < start) return null
+    return start..minOf(requestedEnd, fileSize - 1)
+}
+
+fun isValidRemoteBasename(name: String): Boolean =
+    name.isNotBlank() && name != "." && name != ".." &&
+        '/' !in name && '\\' !in name && name.none { it.code < 0x20 || it.code == 0x7f }
+
+fun remoteCacheName(serverId: String, file: FileNode): String {
+    val normalizedPath = "/" + file.path.replace('\\', '/').trimStart('/').replace(Regex("/+"), "/")
+    val identity = "$serverId\n$normalizedPath\n${file.size}\n${file.lastModified}"
+    val hash = java.security.MessageDigest.getInstance("SHA-256")
+        .digest(identity.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
+    val safeName = file.name.replace(Regex("[^A-Za-z0-9._-]"), "_").takeLast(120)
+        .ifBlank { "remote-file" }
+    return "${hash.take(24)}_$safeName"
 }
 
 // ------------------------------------------------------------------

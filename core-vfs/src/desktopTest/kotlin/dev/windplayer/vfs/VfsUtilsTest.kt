@@ -254,6 +254,32 @@ class VfsUtilsTest {
     }
 
     @Test
+    fun `buildUrlWithCredentials encodes path and supports IPv6`() {
+        val url = buildUrlWithCredentials(
+            scheme = "https", username = "", password = "", host = "2001:db8::1",
+            port = 8443, defaultPort = 443, path = "/media/My Video #1.mkv"
+        )
+        assertEquals("https://[2001:db8::1]:8443/media/My%20Video%20%231.mkv", url)
+    }
+
+    @Test
+    fun `parseByteRange rejects malformed ranges`() {
+        assertEquals(null, parseByteRange("items=0-1", 10))
+        assertEquals(null, parseByteRange("bytes=abc-", 10))
+        assertEquals(null, parseByteRange("bytes=0-1,3-4", 10))
+        assertEquals(null, parseByteRange("bytes=-0", 10))
+        assertEquals(null, parseByteRange("bytes=0-", 0))
+    }
+
+    @Test
+    fun `parseByteRange handles explicit open and suffix ranges`() {
+        assertEquals(2L..5L, parseByteRange("bytes=2-5", 10))
+        assertEquals(8L..9L, parseByteRange("bytes=-2", 10))
+        assertEquals(8L..9L, parseByteRange("bytes=8-", 10))
+        assertEquals(0L..9L, parseByteRange("bytes=0-99", 10))
+    }
+
+    @Test
     fun `SEC-7 buildUrlWithCredentials encodes space as percent-20 not plus`() {
         // SEC-7: URLEncoder.encode emits `+` for space (HTML form encoding),
         // but RFC 3986 userinfo requires `%20`. A password like `my pass`

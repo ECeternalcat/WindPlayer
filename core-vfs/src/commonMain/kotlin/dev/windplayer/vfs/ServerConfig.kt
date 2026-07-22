@@ -29,11 +29,13 @@ data class ServerConfig(
      */
     val bareHost: String
         get() {
-            // Strip scheme first so the userinfo regex doesn't match inside it.
-            val noScheme = host.removePrefix("https://").removePrefix("http://")
-            // Strip `user:pass@` or `user@` if present.
-            val noUserInfo = noScheme.substringAfterLast('@')
-            return noUserInfo.substringBefore(':').trimEnd('/')
+            val schemeSeparator = host.indexOf("://")
+            val noScheme = if (schemeSeparator >= 0) host.substring(schemeSeparator + 3) else host
+            val authority = noScheme.substringBefore('/').substringAfterLast('@')
+            if (authority.startsWith('[')) {
+                return authority.substringAfter('[').substringBefore(']')
+            }
+            return if (authority.count { it == ':' } <= 1) authority.substringBefore(':') else authority
         }
 
     /**
@@ -64,4 +66,3 @@ data class ServerConfig(
         VfsProtocol.LOCAL -> 0
     }
 }
-

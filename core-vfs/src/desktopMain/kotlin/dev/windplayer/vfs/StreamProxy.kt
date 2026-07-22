@@ -75,8 +75,13 @@ class StreamProxy {
         LOG.info("$method ${exchange.requestURI} Range=$rangeHeader")
 
         try {
+            if (method != "GET" && method != "HEAD") {
+                exchange.sendResponseHeaders(405, -1)
+                exchange.close()
+                return
+            }
             val fileSize = session.open()
-            if (fileSize <= 0) {
+            if (fileSize < 0) {
                 exchange.sendResponseHeaders(500, -1)
                 exchange.close()
                 return
@@ -91,38 +96,15 @@ class StreamProxy {
                 return
             }
 
-            var start = 0L
-            var end = fileSize - 1
-
-            if (rangeHeader != null && rangeHeader.startsWith("bytes=")) {
-                val rangeSpec = rangeHeader.removePrefix("bytes=")
-                // M2: reject multi-range (comma) — mpv doesn't use it.
-                if (rangeSpec.contains(",")) {
+            val range = if (rangeHeader == null) 0L..(fileSize - 1) else parseByteRange(rangeHeader, fileSize)
+            if (range == null) {
                     exchange.responseHeaders.set("Content-Range", "bytes */$fileSize")
                     exchange.sendResponseHeaders(416, -1)
                     exchange.close()
                     return
-                }
-                val parts = rangeSpec.split("-")
-                if (parts[0].isEmpty()) {
-                    // Suffix range: bytes=-N → last N bytes
-                    val suffixLen = parts.getOrNull(1)?.toLongOrNull() ?: fileSize
-                    start = (fileSize - suffixLen).coerceAtLeast(0)
-                    end = fileSize - 1
-                } else {
-                    start = parts[0].toLongOrNull() ?: 0
-                    if (parts.size > 1 && parts[1].isNotEmpty()) {
-                        end = parts[1].toLongOrNull() ?: (fileSize - 1)
-                    }
-                }
-                if (start > end || start >= fileSize) {
-                    exchange.responseHeaders.set("Content-Range", "bytes */$fileSize")
-                    exchange.sendResponseHeaders(416, -1)
-                    exchange.close()
-                    return
-                }
-                end = minOf(end, fileSize - 1)
             }
+            val start = range.first
+            val end = range.last
 
             val contentLength = end - start + 1
             exchange.responseHeaders.set("Content-Type", "application/octet-stream")
@@ -130,12 +112,12 @@ class StreamProxy {
             exchange.responseHeaders.set("Content-Length", contentLength.toString())
             exchange.responseHeaders.set("Connection", "close")
 
-            if (start > 0 || end < fileSize - 1) {
+            if (rangeHeader != null) {
                 exchange.responseHeaders.set("Content-Range", "bytes $start-$end/$fileSize")
                 exchange.sendResponseHeaders(206, contentLength)
                 LOG.info("206 bytes $start-$end/$fileSize ($contentLength bytes)")
             } else {
-                exchange.sendResponseHeaders(200, contentLength)
+                exchange.sendResponseHeaders(200, if (contentLength == 0L) -1 else contentLength)
                 LOG.info("200 $contentLength bytes")
             }
 
@@ -193,15 +175,24 @@ class StreamProxy {
             if (closed) return -1
             if (remoteFile != null) return fileSize
             val client = SSHClient(createSshjConfig())
-            client.addHostKeyVerifier(KnownHostsManager.verifier)
-            client.connect(config.bareHost, config.defaultPort())
-            client.authPassword(config.username, config.password)
-            val sftpClient = client.newSFTPClient()
-            val file = sftpClient.open(filePath)
-            fileSize = file.fetchAttributes().size
-            ssh = client
-            sftp = sftpClient
-            remoteFile = file
+            var sftpClient: SFTPClient? = null
+            var file: RemoteFile? = null
+            try {
+                client.addHostKeyVerifier(KnownHostsManager.verifier)
+                client.connect(config.bareHost, config.defaultPort())
+                client.authPassword(config.username, config.password)
+                sftpClient = client.newSFTPClient()
+                file = sftpClient.open(filePath)
+                fileSize = file.fetchAttributes().size
+                ssh = client
+                sftp = sftpClient
+                remoteFile = file
+            } catch (e: Exception) {
+                try { file?.close() } catch (_: Exception) {}
+                try { sftpClient?.close() } catch (_: Exception) {}
+                try { client.disconnect() } catch (_: Exception) {}
+                throw e
+            }
             LOG.info("opened $filePath ($fileSize bytes)")
             return fileSize
         }

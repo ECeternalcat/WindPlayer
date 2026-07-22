@@ -18,7 +18,9 @@ object TranslationStarter {
     data class Params(
         val videoTitle: String,
         val sourceUrl: String,
-        val duration: Double
+        val sourceIdentity: String,
+        val duration: Double,
+        val playbackGeneration: Long = -1
     )
 
     private val _pendingRequest = MutableStateFlow<Params?>(null)
@@ -32,13 +34,15 @@ object TranslationStarter {
         context: Context,
         videoTitle: String,
         sourceUrl: String,
-        duration: Double
+        duration: Double,
+        sourceIdentity: String = normalizeSourceIdentity(sourceUrl),
+        playbackGeneration: Long = -1
     ): Boolean {
         if (TranslateService.isRunning) {
             Toast.makeText(context, "A task is already running", Toast.LENGTH_SHORT).show()
             return false
         }
-        _pendingRequest.value = Params(videoTitle, sourceUrl, duration)
+        _pendingRequest.value = Params(videoTitle, sourceUrl, sourceIdentity, duration, playbackGeneration)
         return true
     }
 

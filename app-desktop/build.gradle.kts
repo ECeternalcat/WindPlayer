@@ -38,11 +38,6 @@ compose.desktop {
     application {
         mainClass = "dev.windplayer.MainKt"
 
-        // Forward-slash path works on both Windows and Unix; Java's File/Path
-        // accepts both. Avoid `\..` (Windows-only) so Linux CI / distZip
-        // produces a runnable distribution.
-        jvmArgs += "-Dmpv.lib.path=${rootProject.projectDir.absolutePath}/lib/mpv-dev"
-
         nativeDistributions {
             targetFormats(TargetFormat.Msi, TargetFormat.Deb)
             packageName = "WindPlayer"

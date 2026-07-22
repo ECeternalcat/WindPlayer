@@ -55,6 +55,10 @@ class TranslateService : Service() {
      * See [Documents/Dual-Subtitle-Plan.md] §4.1.
      */
     data class SubtitleMountRequest(
+        val taskId: String,
+        val sourceUrl: String,
+        val sourceIdentity: String,
+        val playbackGeneration: Long,
         val primaryPath: String,
         val secondaryPath: String? = null,
         val dualPath: String? = null
@@ -70,9 +74,12 @@ class TranslateService : Service() {
 
         const val EXTRA_VIDEO_TITLE = "video_title"
         const val EXTRA_SOURCE_URL = "source_url"
+        const val EXTRA_SOURCE_IDENTITY = "source_identity"
         const val EXTRA_DURATION = "duration"
         const val EXTRA_TRANSLATE = "do_translate"
         const val EXTRA_TRACK_INDEX = "track_index"
+        const val EXTRA_TASK_ID = "task_id"
+        const val EXTRA_PLAYBACK_GENERATION = "playback_generation"
 
         /**
          * §7 Hot Reload: when the pipeline completes, the generated SRT
@@ -109,9 +116,11 @@ class TranslateService : Service() {
             context: Context,
             videoTitle: String,
             sourceUrl: String,
+            sourceIdentity: String,
             duration: Double,
             doTranslate: Boolean = true,
-            trackIndex: Int = -1
+            trackIndex: Int = -1,
+            playbackGeneration: Long = -1
         ): Boolean {
             if (isRunning) return false
             taskActive = true
@@ -131,9 +140,12 @@ class TranslateService : Service() {
             val intent = Intent(context, TranslateService::class.java).apply {
                 putExtra(EXTRA_VIDEO_TITLE, videoTitle)
                 putExtra(EXTRA_SOURCE_URL, sourceUrl)
+                putExtra(EXTRA_SOURCE_IDENTITY, sourceIdentity)
                 putExtra(EXTRA_DURATION, duration)
                 putExtra(EXTRA_TRANSLATE, doTranslate)
                 putExtra(EXTRA_TRACK_INDEX, trackIndex)
+                putExtra(EXTRA_TASK_ID, currentTaskId)
+                putExtra(EXTRA_PLAYBACK_GENERATION, playbackGeneration)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
@@ -174,16 +186,27 @@ class TranslateService : Service() {
             return START_NOT_STICKY
         }
         val duration = intent.getDoubleExtra(EXTRA_DURATION, 0.0)
+        val sourceIdentity = intent.getStringExtra(EXTRA_SOURCE_IDENTITY)
+            ?: normalizeSourceIdentity(sourceUrl)
         val doTranslate = intent.getBooleanExtra(EXTRA_TRANSLATE, true)
         val trackIndex = intent.getIntExtra(EXTRA_TRACK_INDEX, -1)
+        val taskId = intent.getStringExtra(EXTRA_TASK_ID) ?: run {
+            Log.w("TranslateService", "No task ID in intent - stopping")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        val playbackGeneration = intent.getLongExtra(EXTRA_PLAYBACK_GENERATION, -1)
 
         // Create and start the translation manager.
         translationManager = TranslationManager(
             context = this,
             audioSourceUrl = { sourceUrl },
             audioDuration = { duration },
+            sourceIdentity = sourceIdentity,
             doTranslate = doTranslate,
-            audioTrackIndex = trackIndex
+            audioTrackIndex = trackIndex,
+            taskId = taskId,
+            playbackGeneration = playbackGeneration
         )
         translationManager!!.start()
 

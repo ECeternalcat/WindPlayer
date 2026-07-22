@@ -67,7 +67,7 @@ internal fun showContextMenu(
         addActionListener {
             player.command("cycle", "mute")
             val muted = try { player.getPropertyString("mute") == "yes" } catch (_: Exception) { false }
-            osdEvents.tryEmit(if (muted) I18n.get("osd_muted") else "${I18n.get("osd_vol")}: ${player.getPropertyLong("volume")}%")
+            osdEvents.tryEmit(if (muted) I18n.get("osd_muted") else "${I18n.get("osd_vol")}: ${player.getPropertyLong("volume") ?: 100L}%")
         }
     })
 
@@ -86,13 +86,13 @@ internal fun showContextMenu(
         add(JMenuItem(I18n.get("sub_delay_neg")).apply {
             addActionListener {
                 player.command("add", "sub-delay", "-0.1")
-                osdEvents.tryEmit("${I18n.get("osd_sub_delay")}: %+.1fs".format(player.getPropertyDouble("sub-delay")))
+                osdEvents.tryEmit("${I18n.get("osd_sub_delay")}: %+.1fs".format(player.getPropertyDouble("sub-delay") ?: 0.0))
             }
         })
         add(JMenuItem(I18n.get("sub_delay_pos")).apply {
             addActionListener {
                 player.command("add", "sub-delay", "0.1")
-                osdEvents.tryEmit("${I18n.get("osd_sub_delay")}: %+.1fs".format(player.getPropertyDouble("sub-delay")))
+                osdEvents.tryEmit("${I18n.get("osd_sub_delay")}: %+.1fs".format(player.getPropertyDouble("sub-delay") ?: 0.0))
             }
         })
         add(JMenuItem(I18n.get("reset_sub_delay")).apply {
@@ -116,13 +116,13 @@ internal fun showContextMenu(
         add(JMenuItem(I18n.get("audio_delay_neg")).apply {
             addActionListener {
                 player.command("add", "audio-delay", "-0.1")
-                osdEvents.tryEmit("${I18n.get("osd_audio_delay")}: %+.1fs".format(player.getPropertyDouble("audio-delay")))
+                osdEvents.tryEmit("${I18n.get("osd_audio_delay")}: %+.1fs".format(player.getPropertyDouble("audio-delay") ?: 0.0))
             }
         })
         add(JMenuItem(I18n.get("audio_delay_pos")).apply {
             addActionListener {
                 player.command("add", "audio-delay", "0.1")
-                osdEvents.tryEmit("${I18n.get("osd_audio_delay")}: %+.1fs".format(player.getPropertyDouble("audio-delay")))
+                osdEvents.tryEmit("${I18n.get("osd_audio_delay")}: %+.1fs".format(player.getPropertyDouble("audio-delay") ?: 0.0))
             }
         })
         add(JMenuItem(I18n.get("reset_audio_delay")).apply {
@@ -139,7 +139,7 @@ internal fun showContextMenu(
     popup.add(JMenu(I18n.get("speed")).apply {
         add(JMenuItem(I18n.get("slower")).apply {
             addActionListener {
-                val speed = player.getPropertyDouble("speed")
+                val speed = player.getPropertyDouble("speed") ?: 1.0
                 val newSpeed = maxOf(speed - 0.25, 0.25)
                 player.setProperty("speed", "%.2f".format(newSpeed))
                 osdEvents.tryEmit("${I18n.get("speed")}: %.2fx".format(newSpeed))
@@ -147,7 +147,7 @@ internal fun showContextMenu(
         })
         add(JMenuItem(I18n.get("faster")).apply {
             addActionListener {
-                val speed = player.getPropertyDouble("speed")
+                val speed = player.getPropertyDouble("speed") ?: 1.0
                 val newSpeed = minOf(speed + 0.25, 4.0)
                 player.setProperty("speed", "%.2f".format(newSpeed))
                 osdEvents.tryEmit("${I18n.get("speed")}: %.2fx".format(newSpeed))
@@ -165,14 +165,14 @@ internal fun showContextMenu(
     popup.add(JMenu(I18n.get("ab_loop")).apply {
         add(JMenuItem(I18n.get("set_a")).apply {
             addActionListener {
-                val pos = player.getPropertyDouble("time-pos")
+                val pos = player.getPropertyDouble("time-pos") ?: 0.0
                 player.setProperty("ab-loop-a", "%.3f".format(pos))
                 osdEvents.tryEmit("${I18n.get("osd_ab_a")}: ${formatDuration(pos)}")
             }
         })
         add(JMenuItem(I18n.get("set_b")).apply {
             addActionListener {
-                val pos = player.getPropertyDouble("time-pos")
+                val pos = player.getPropertyDouble("time-pos") ?: 0.0
                 player.setProperty("ab-loop-b", "%.3f".format(pos))
                 osdEvents.tryEmit("${I18n.get("osd_ab_b")}: ${formatDuration(pos)}")
             }
@@ -250,7 +250,7 @@ private fun JMenu.addEqItem(
         }
         addActionListener {
             player.command("add", property, delta.toString())
-            osdEvents.tryEmit("$label: ${player.getPropertyLong(property)}")
+            osdEvents.tryEmit("$label: ${player.getPropertyLong(property) ?: 0L}")
         }
     })
 }

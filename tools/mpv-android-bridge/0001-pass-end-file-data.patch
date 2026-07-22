@@ -1,0 +1,48 @@
+diff --git a/app/src/main/jni/event.cpp b/app/src/main/jni/event.cpp
+--- a/app/src/main/jni/event.cpp
++++ b/app/src/main/jni/event.cpp
+@@ -43,4 +43,12 @@
+ static void sendEventToJava(JNIEnv *env, int event)
+ {
+     env->CallStaticVoidMethod(mpv_MPVLib, mpv_MPVLib_event, event);
+ }
++
++static void sendEndFileToJava(JNIEnv *env, const mpv_event_end_file *end)
++{
++    const jint reason = end ? static_cast<jint>(end->reason) : 4;
++    const jint error = end ? static_cast<jint>(end->error) : -20;
++    const jlong playlist_entry_id = end ? static_cast<jlong>(end->playlist_entry_id) : 0;
++    env->CallStaticVoidMethod(mpv_MPVLib, mpv_MPVLib_endFile, reason, error, playlist_entry_id);
++}
+@@ -97,7 +106,12 @@
+         case MPV_EVENT_PROPERTY_CHANGE:
+             mp_property = (mpv_event_property*)mp_event->data;
+             sendPropertyUpdateToJava(env, mp_property);
+             break;
++        case MPV_EVENT_END_FILE: {
++            auto *end = static_cast<mpv_event_end_file *>(mp_event->data);
++            sendEndFileToJava(env, end);
++            break;
++        }
+         default:
+             ALOGV("event: %s\n", mpv_event_name(mp_event->event_id));
+             sendEventToJava(env, mp_event->event_id);
+diff --git a/app/src/main/jni/jni_utils.cpp b/app/src/main/jni/jni_utils.cpp
+--- a/app/src/main/jni/jni_utils.cpp
++++ b/app/src/main/jni/jni_utils.cpp
+@@ -45,3 +45,4 @@
+     mpv_MPVLib_eventProperty_SS = env->GetStaticMethodID(mpv_MPVLib, "eventProperty", "(Ljava/lang/String;Ljava/lang/String;)V"); // eventProperty(String, String)
+     mpv_MPVLib_event = env->GetStaticMethodID(mpv_MPVLib, "event", "(I)V"); // event(int)
++    mpv_MPVLib_endFile = env->GetStaticMethodID(mpv_MPVLib, "endFile", "(IIJ)V");
+     mpv_MPVLib_logMessage_SiS = env->GetStaticMethodID(mpv_MPVLib, "logMessage", "(Ljava/lang/String;ILjava/lang/String;)V"); // logMessage(String, int, String)
+diff --git a/app/src/main/jni/jni_utils.h b/app/src/main/jni/jni_utils.h
+--- a/app/src/main/jni/jni_utils.h
++++ b/app/src/main/jni/jni_utils.h
+@@ -23,6 +23,7 @@
+ 	mpv_MPVLib_eventProperty_Sb,
+ 	mpv_MPVLib_eventProperty_Sl,
+ 	mpv_MPVLib_eventProperty_Sd,
+ 	mpv_MPVLib_eventProperty_SS,
+ 	mpv_MPVLib_event,
++	mpv_MPVLib_endFile,
+ 	mpv_MPVLib_logMessage_SiS;

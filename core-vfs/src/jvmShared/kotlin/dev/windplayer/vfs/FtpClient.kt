@@ -30,6 +30,7 @@ class FtpClient : VfsClient {
             // which is what ~all modern FTPS servers support.
             val client: FTPClient = if (config.useTls) {
                 FTPSClient("TLS", false).also {
+                    it.isEndpointCheckingEnabled = true
                     LOG.info("using FTPS (explicit TLS) for ${config.bareHost}")
                 }
             } else {

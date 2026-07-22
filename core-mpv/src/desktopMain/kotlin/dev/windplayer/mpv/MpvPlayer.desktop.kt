@@ -1,9 +1,9 @@
 package dev.windplayer.mpv
 
 import com.sun.jna.Pointer
-import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.receiveAsFlow
 import java.util.logging.Level
 import java.util.logging.Logger
 
@@ -18,11 +18,8 @@ actual class MpvPlayer actual constructor() {
     // Control events (FileLoaded/EndFile/error) must never be silently lost.
     // DROP_OLDEST keeps the most recent events when a slow collector backs up;
     // 256 is large enough for bursts of property changes during seek.
-    private val _events = MutableSharedFlow<MpvEvent>(
-        extraBufferCapacity = 256,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST
-    )
-    actual val events: SharedFlow<MpvEvent> = _events
+    private val eventChannel = Channel<MpvEvent>(Channel.UNLIMITED)
+    actual val events: Flow<MpvEvent> = eventChannel.receiveAsFlow()
 
     private val lib: MpvLibrary by lazy { MpvLibrary.INSTANCE }
 
@@ -60,37 +57,33 @@ actual class MpvPlayer actual constructor() {
                     when (event.event_id) {
                         MPV_EVENT_FILE_LOADED -> {
                             LOG.fine("file loaded")
-                            _events.tryEmit(MpvEvent.FileLoaded())
+                            eventChannel.trySend(MpvEvent.FileLoaded())
                         }
-                        MPV_EVENT_IDLE -> _events.tryEmit(MpvEvent.Idle())
+                        MPV_EVENT_IDLE -> eventChannel.trySend(MpvEvent.Idle())
                         MPV_EVENT_END_FILE -> {
-                            // L13: default to 4 (ERROR) rather than 0 (EOF) so a
-                            // null data pointer is distinguishable from natural end.
-                            val reason = event.data?.getInt(0) ?: 4
-                            LOG.fine("end file, reason=$reason")
-                            _events.tryEmit(MpvEvent.EndFile(reason))
+                            val end = event.data?.let { MpvEventEndFile(it).apply { read() } }
+                            val reason = end?.reason ?: 4
+                            val error = end?.error ?: -20
+                            LOG.fine("end file, reason=$reason, error=$error")
+                            eventChannel.trySend(MpvEvent.EndFile(reason, error, end?.playlist_entry_id ?: 0))
                         }
                         MPV_EVENT_PROPERTY_CHANGE -> {
-                            // mpv_event_property layout (x86_64):
-                            //   offset  0: const char* name
-                            //   offset  8: mpv_format format (int)
-                            //   offset 16: void* data
                             val data = event.data
                             if (data != null) {
                                 try {
-                                    val namePtr = data.getPointer(0)
-                                    if (namePtr != null) {
+                                    val property = MpvEventProperty(data).apply { read() }
+                                    property.name?.let { namePtr ->
                                         val name = namePtr.getString(0)
-                                        val format = data.getInt(8)
-                                        val valuePtr = data.getPointer(16)
+                                        val valuePtr = property.data
+                                        val format = property.format
                                         val value: Any? = when (format) {
-                                            MPV_FORMAT_STRING -> valuePtr?.getString(0)
+                                            MPV_FORMAT_STRING -> valuePtr?.getPointer(0)?.getString(0)
                                             MPV_FORMAT_FLAG -> valuePtr != null && valuePtr.getInt(0) != 0
                                             MPV_FORMAT_INT64 -> valuePtr?.getLong(0)
                                             MPV_FORMAT_DOUBLE -> valuePtr?.getDouble(0)
                                             else -> null // NONE / OSD_STRING / NODE / BYTE_ARRAY — not handled
                                         }
-                                        _events.tryEmit(MpvEvent.PropertyChange(name, value))
+                                        eventChannel.trySend(MpvEvent.PropertyChange(name, value))
                                     }
                                 } catch (e: Exception) {
                                     LOG.log(Level.WARNING, "malformed property event", e)
@@ -108,16 +101,12 @@ actual class MpvPlayer actual constructor() {
     actual fun dispose() {
         synchronized(lock) {
             running = false
+            if (handle != 0L) lib.mpv_wakeup(Pointer(handle))
         }
-        // mpv_terminate_destroy wakes a blocked mpv_wait_event, so the event
-        // thread will fall out of its loop promptly. Join BEFORE destroying
-        // the context — calling any mpv API after terminate_destroy is UB.
         eventThread?.join(2000)
-        // L1: check whether the event thread actually terminated. If it didn't
-        // (e.g. stuck inside mpv_wait_event), proceeding to terminate_destroy
-        // is a use-after-free risk — log loudly so it's diagnosable.
         if (eventThread?.isAlive == true) {
-            LOG.warning("event thread did not terminate within 2s; destroy may race")
+            LOG.severe("event thread did not terminate after mpv_wakeup; preserving native context to avoid use-after-free")
+            return
         }
         synchronized(lock) {
             eventThread = null
@@ -187,20 +176,20 @@ actual class MpvPlayer actual constructor() {
         }
     }
 
-    actual fun getPropertyLong(name: String): Long {
+    actual fun getPropertyLong(name: String): Long? {
         synchronized(lock) {
-            if (handle == 0L) return 0
+            if (handle == 0L) return null
             val arr = LongArray(1)
-            lib.mpv_get_property(ptr(), name, MPV_FORMAT_INT64, arr)
+            if (lib.mpv_get_property(ptr(), name, MPV_FORMAT_INT64, arr) < 0) return null
             return arr[0]
         }
     }
 
-    actual fun getPropertyDouble(name: String): Double {
+    actual fun getPropertyDouble(name: String): Double? {
         synchronized(lock) {
-            if (handle == 0L) return 0.0
+            if (handle == 0L) return null
             val arr = DoubleArray(1)
-            lib.mpv_get_property(ptr(), name, MPV_FORMAT_DOUBLE, arr)
+            if (lib.mpv_get_property(ptr(), name, MPV_FORMAT_DOUBLE, arr) < 0) return null
             return arr[0]
         }
     }

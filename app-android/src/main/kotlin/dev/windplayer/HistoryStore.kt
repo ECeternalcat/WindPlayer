@@ -2,6 +2,8 @@ package dev.windplayer
 
 import android.content.Context
 import dev.windplayer.vfs.VfsProtocol
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 data class HistoryEntry(
     val name: String,
@@ -22,8 +24,13 @@ data class HistoryEntry(
 object HistoryStore {
     private const val PREFS = "windplayer_history"
     private const val MAX = 10
+    private val writeMutex = Mutex()
 
     fun load(context: Context): List<HistoryEntry> {
+        return loadUnlocked(context)
+    }
+
+    private fun loadUnlocked(context: Context): List<HistoryEntry> {
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val count = p.getInt("count", 0)
         return (0 until count).mapNotNull { i ->
@@ -46,8 +53,8 @@ object HistoryStore {
         }
     }
 
-    fun add(context: Context, entry: HistoryEntry): List<HistoryEntry> {
-        val current = load(context)
+    suspend fun add(context: Context, entry: HistoryEntry): List<HistoryEntry> = writeMutex.withLock {
+        val current = loadUnlocked(context)
         // Preserve playback state from any existing entry with the same path.
         // Without this, re-playing a file resets position/tracks/speed to defaults.
         val existing = current.firstOrNull { it.path == entry.path }
@@ -62,38 +69,38 @@ object HistoryStore {
             )
         } else entry
         val updated = (listOf(merged) + current.filterNot { it.path == entry.path }).take(MAX)
-        save(context, updated)
+        saveUnlocked(context, updated)
         return updated
     }
 
-    fun updatePosition(context: Context, path: String, position: Double, duration: Double) {
-        val current = load(context)
+    suspend fun updatePosition(context: Context, path: String, position: Double, duration: Double) = writeMutex.withLock {
+        val current = loadUnlocked(context)
         val updated = current.map {
             if (it.path == path) it.copy(
                 position = if (position > 0) position else it.position,
                 duration = if (duration > 0) duration else it.duration
             ) else it
         }
-        save(context, updated)
+        saveUnlocked(context, updated)
     }
 
-    fun updateThumbnail(context: Context, path: String, thumbPath: String?) {
-        val current = load(context)
+    suspend fun updateThumbnail(context: Context, path: String, thumbPath: String?) = writeMutex.withLock {
+        val current = loadUnlocked(context)
         val updated = current.map {
             if (it.path == path) it.copy(thumbnailPath = thumbPath) else it
         }
-        save(context, updated)
+        saveUnlocked(context, updated)
     }
 
-    fun updatePlaybackState(context: Context, path: String, sid: String?, aid: String?, speed: Double) {
-        val current = load(context)
+    suspend fun updatePlaybackState(context: Context, path: String, sid: String?, aid: String?, speed: Double) = writeMutex.withLock {
+        val current = loadUnlocked(context)
         val updated = current.map {
             if (it.path == path) it.copy(selectedSid = sid, selectedAid = aid, speed = speed) else it
         }
-        save(context, updated)
+        saveUnlocked(context, updated)
     }
 
-    private fun save(context: Context, entries: List<HistoryEntry>) {
+    private fun saveUnlocked(context: Context, entries: List<HistoryEntry>) {
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val oldCount = p.getInt("count", 0)
         val e = p.edit()

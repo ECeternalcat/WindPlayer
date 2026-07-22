@@ -4,19 +4,15 @@ import android.content.Context
 import android.util.Log
 import android.view.Surface
 import `is`.xyz.mpv.MPVLib
-import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.receiveAsFlow
 
 actual class MpvPlayer actual constructor() {
 
-    private val lock = Any()
     // Control events must never be silently lost; DROP_OLDEST keeps the newest.
-    private val _events = MutableSharedFlow<MpvEvent>(
-        extraBufferCapacity = 256,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST
-    )
-    actual val events: SharedFlow<MpvEvent> = _events
+    private val eventChannel = Channel<MpvEvent>(Channel.UNLIMITED)
+    actual val events: Flow<MpvEvent> = eventChannel.receiveAsFlow()
     private var created = false
     private var initialized = false
     // CON-4: read inside the JNI event-thread observer callback (event()),
@@ -36,19 +32,19 @@ actual class MpvPlayer actual constructor() {
     private var eofReached = false
 
     private val observer = object : MPVLib.EventObserver {
-        override fun eventProperty(property: String) { _events.tryEmit(MpvEvent.PropertyChange(property, null)) }
-        override fun eventProperty(property: String, value: Long) { _events.tryEmit(MpvEvent.PropertyChange(property, value)) }
+        override fun eventProperty(property: String) { eventChannel.trySend(MpvEvent.PropertyChange(property, null)) }
+        override fun eventProperty(property: String, value: Long) { eventChannel.trySend(MpvEvent.PropertyChange(property, value)) }
         override fun eventProperty(property: String, value: Boolean) {
             if (property == "eof-reached") eofReached = value
-            _events.tryEmit(MpvEvent.PropertyChange(property, value))
+            eventChannel.trySend(MpvEvent.PropertyChange(property, value))
         }
-        override fun eventProperty(property: String, value: String) { _events.tryEmit(MpvEvent.PropertyChange(property, value)) }
-        override fun eventProperty(property: String, value: Double) { _events.tryEmit(MpvEvent.PropertyChange(property, value)) }
+        override fun eventProperty(property: String, value: String) { eventChannel.trySend(MpvEvent.PropertyChange(property, value)) }
+        override fun eventProperty(property: String, value: Double) { eventChannel.trySend(MpvEvent.PropertyChange(property, value)) }
         override fun event(eventId: Int) {
             when (eventId) {
                 MPVLib.MpvEvent.MPV_EVENT_FILE_LOADED -> {
                     fileLoadedBefore = true
-                    _events.tryEmit(MpvEvent.FileLoaded())
+                    eventChannel.trySend(MpvEvent.FileLoaded())
                 }
                 MPVLib.MpvEvent.MPV_EVENT_END_FILE -> {
                     // libplayer.so's `event(int)` JNI callback does NOT pass the
@@ -69,10 +65,18 @@ actual class MpvPlayer actual constructor() {
                     // callback risks a native-side lock-ordering deadlock.
                     val reason = inferEndFileReason(fileLoadedBefore)
                     fileLoadedBefore = false
-                    _events.tryEmit(MpvEvent.EndFile(reason))
+                    eventChannel.trySend(MpvEvent.EndFile(reason))
                 }
-                MPVLib.MpvEvent.MPV_EVENT_IDLE -> _events.tryEmit(MpvEvent.Idle())
+                MPVLib.MpvEvent.MPV_EVENT_IDLE -> eventChannel.trySend(MpvEvent.Idle())
             }
+        }
+
+        override fun endFile(reason: Int, error: Int, playlistEntryId: Long) {
+            synchronized(NATIVE_LOCK) {
+                fileLoadedBefore = false
+                eofReached = false
+            }
+            eventChannel.trySend(MpvEvent.EndFile(reason, error, playlistEntryId))
         }
     }
 
@@ -96,7 +100,7 @@ actual class MpvPlayer actual constructor() {
     }
 
     fun initAndroid(context: Context) {
-        synchronized(lock) {
+        synchronized(NATIVE_LOCK) {
             if (observerAdded) return
             MPVLib.addObserver(observer)
             // Observe eof-reached so inferEndFileReason can read the cached
@@ -113,33 +117,47 @@ actual class MpvPlayer actual constructor() {
     // entry point is createWithContext(context). Log a warning so callers that
     // accidentally use create() (e.g. shared code) are diagnosable.
     actual fun create() {
-        synchronized(lock) { if (!created) { Log.w(TAG, "create() called — use createWithContext(context) on Android"); created = true } }
+        synchronized(NATIVE_LOCK) {
+            if (!created) Log.w(TAG, "create() called — use createWithContext(context) on Android")
+        }
     }
 
     fun createWithContext(context: Context) {
-        synchronized(lock) {
+        synchronized(NATIVE_LOCK) {
             if (created) return
+            if (nativeOwner !== null && nativeOwner !== this) {
+                val previousOwner = nativeOwner!!
+                try { MPVLib.removeObserver(previousOwner.observer) } catch (_: Exception) {}
+                try { MPVLib.destroy() } catch (e: Exception) { Log.w(TAG, "destroy previous native owner failed", e) }
+                previousOwner.created = false
+                previousOwner.initialized = false
+                previousOwner.observerAdded = false
+            }
             MPVLib.create(context)
+            nativeOwner = this
             created = true
             Log.i(TAG, "mpv created")
         }
     }
 
-    fun attachSurface(surface: Surface) {
+    fun attachSurface(surface: Surface): Boolean {
         // CON-8: log failures (was no try/catch — a flaky attach silently
         // aborted init with only a generic "Player init error" upstream).
-        synchronized(lock) {
-            if (created) try {
-                MPVLib.attachSurface(surface); Log.i(TAG, "Surface attached")
+        synchronized(NATIVE_LOCK) {
+            if (created && nativeOwner === this) try {
+                MPVLib.attachSurface(surface)
+                Log.i(TAG, "Surface attached")
+                return true
             } catch (e: Exception) {
                 Log.w(TAG, "attachSurface failed", e)
             }
+            return false
         }
     }
 
     fun detachSurface() {
         // CON-8: log failures (was silent swallow, inconsistent with M3 rule).
-        synchronized(lock) {
+        synchronized(NATIVE_LOCK) {
             if (created) try {
                 MPVLib.detachSurface()
             } catch (e: Exception) {
@@ -149,8 +167,9 @@ actual class MpvPlayer actual constructor() {
     }
 
     actual fun initialize() {
-        synchronized(lock) {
+        synchronized(NATIVE_LOCK) {
             if (!created || initialized) return
+            if (nativeOwner !== this) return
             MPVLib.init()
             initialized = true
             // If initAndroid() ran before initialize() (typical flow:
@@ -165,12 +184,16 @@ actual class MpvPlayer actual constructor() {
     }
 
     actual fun dispose() {
-        synchronized(lock) {
+        synchronized(NATIVE_LOCK) {
             // removeObserver FIRST: after MPVLib.destroy(), the JNI event thread
             // may still deliver in-flight events to the observer, which would
             // call back into MPVLib on a destroyed mpv context.
             try { MPVLib.removeObserver(observer) } catch (_: Exception) {}
-            if (initialized) { try { MPVLib.destroy() } catch (_: Exception) {}; initialized = false }
+            if (nativeOwner === this && initialized) {
+                try { MPVLib.destroy() } catch (_: Exception) {}
+                nativeOwner = null
+            }
+            initialized = false
             created = false
             observerAdded = false
             eofReached = false
@@ -182,39 +205,39 @@ actual class MpvPlayer actual constructor() {
     // respond" is diagnosable from logcat. Previously every exception was
     // silently swallowed with zero signal.
     actual fun command(vararg args: String) {
-        synchronized(lock) { if (initialized) try { MPVLib.command(args) } catch (e: Exception) { Log.w(TAG, "command failed", e) } }
+        synchronized(NATIVE_LOCK) { if (initialized && nativeOwner === this) try { MPVLib.command(args) } catch (e: Exception) { Log.w(TAG, "command failed", e) } }
     }
 
     actual fun setOption(key: String, value: String) {
-        synchronized(lock) { if (created) try { MPVLib.setOptionString(key, value) } catch (e: Exception) { Log.w(TAG, "setOption($key) failed", e) } }
+        synchronized(NATIVE_LOCK) { if (created && nativeOwner === this) try { MPVLib.setOptionString(key, value) } catch (e: Exception) { Log.w(TAG, "setOption($key) failed", e) } }
     }
 
     actual fun setOption(key: String, value: Long) {
-        synchronized(lock) { if (created) try { MPVLib.setOptionString(key, value.toString()) } catch (e: Exception) { Log.w(TAG, "setOption($key=$value) failed", e) } }
+        synchronized(NATIVE_LOCK) { if (created && nativeOwner === this) try { MPVLib.setOptionString(key, value.toString()) } catch (e: Exception) { Log.w(TAG, "setOption($key=$value) failed", e) } }
     }
 
     actual fun setProperty(key: String, value: String) {
-        synchronized(lock) { if (initialized) try { MPVLib.setPropertyString(key, value) } catch (e: Exception) { Log.w(TAG, "setProperty($key) failed", e) } }
+        synchronized(NATIVE_LOCK) { if (initialized && nativeOwner === this) try { MPVLib.setPropertyString(key, value) } catch (e: Exception) { Log.w(TAG, "setProperty($key) failed", e) } }
     }
 
     actual fun setProperty(key: String, value: Long) {
-        synchronized(lock) { if (initialized) try { MPVLib.setPropertyString(key, value.toString()) } catch (e: Exception) { Log.w(TAG, "setProperty($key=$value) failed", e) } }
+        synchronized(NATIVE_LOCK) { if (initialized && nativeOwner === this) try { MPVLib.setPropertyString(key, value.toString()) } catch (e: Exception) { Log.w(TAG, "setProperty($key=$value) failed", e) } }
     }
 
     actual fun getPropertyString(name: String): String? {
-        synchronized(lock) { if (!initialized) return null; return try { MPVLib.getPropertyString(name) } catch (e: Exception) { Log.w(TAG, "getPropertyString($name) failed", e); null } }
+        synchronized(NATIVE_LOCK) { if (!initialized || nativeOwner !== this) return null; return try { MPVLib.getPropertyString(name) } catch (e: Exception) { Log.w(TAG, "getPropertyString($name) failed", e); null } }
     }
 
-    actual fun getPropertyLong(name: String): Long {
-        synchronized(lock) { if (!initialized) return 0L; return try { MPVLib.getPropertyInt(name)?.toLong() ?: 0L } catch (e: Exception) { Log.w(TAG, "getPropertyLong($name) failed", e); 0L } }
+    actual fun getPropertyLong(name: String): Long? {
+        synchronized(NATIVE_LOCK) { if (!initialized || nativeOwner !== this) return null; return try { MPVLib.getPropertyInt(name)?.toLong() } catch (e: Exception) { Log.w(TAG, "getPropertyLong($name) failed", e); null } }
     }
 
-    actual fun getPropertyDouble(name: String): Double {
-        synchronized(lock) { if (!initialized) return 0.0; return try { MPVLib.getPropertyDouble(name) ?: 0.0 } catch (e: Exception) { Log.w(TAG, "getPropertyDouble($name) failed", e); 0.0 } }
+    actual fun getPropertyDouble(name: String): Double? {
+        synchronized(NATIVE_LOCK) { if (!initialized || nativeOwner !== this) return null; return try { MPVLib.getPropertyDouble(name) } catch (e: Exception) { Log.w(TAG, "getPropertyDouble($name) failed", e); null } }
     }
 
     actual fun observeProperty(name: String, format: MpvFormat) {
-        synchronized(lock) { if (initialized) try { MPVLib.observeProperty(name, format.ordinal) } catch (e: Exception) { Log.w(TAG, "observeProperty($name) failed", e) } }
+        synchronized(NATIVE_LOCK) { if (initialized && nativeOwner === this) try { MPVLib.observeProperty(name, format.ordinal) } catch (e: Exception) { Log.w(TAG, "observeProperty($name) failed", e) } }
     }
 
     actual fun clearPropertyObservers() {
@@ -222,10 +245,14 @@ actual class MpvPlayer actual constructor() {
         // property observers don't accumulate the way desktop's do. Just
         // reset the eof cache so a stale value from a previous session
         // doesn't leak into the next END_FILE inference.
-        synchronized(lock) { eofReached = false }
+        synchronized(NATIVE_LOCK) { eofReached = false }
     }
 
-    fun isCreated(): Boolean = synchronized(lock) { created }
+    fun isCreated(): Boolean = synchronized(NATIVE_LOCK) { created && nativeOwner === this }
 
-    companion object { private const val TAG = "MpvPlayer" }
+    companion object {
+        private const val TAG = "MpvPlayer"
+        private val NATIVE_LOCK = Any()
+        private var nativeOwner: MpvPlayer? = null
+    }
 }

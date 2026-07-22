@@ -8,13 +8,46 @@ import android.media.MediaFormat
 import android.net.Uri
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
-import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
+import java.io.Closeable
 import java.io.File
-import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.channels.FileChannel
+
+class ExtractedAudio(
+    private val file: File,
+    val totalSamples: Long,
+    val durationSec: Double
+) : Closeable {
+    private var channel: FileChannel? = RandomAccessFile(file, "r").channel
+
+    @Synchronized
+    fun readChunk(startSample: Long, maxSamples: Int): FloatArray {
+        check(startSample >= 0 && maxSamples >= 0) { "Invalid audio chunk" }
+        if (startSample >= totalSamples || maxSamples == 0) return FloatArray(0)
+        val count = minOf(maxSamples.toLong(), totalSamples - startSample).toInt()
+        val bytes = ByteBuffer.allocate(count * 4).order(ByteOrder.LITTLE_ENDIAN)
+        var position = startSample * 4
+        while (bytes.hasRemaining()) {
+            val read = channel?.read(bytes, position) ?: throw IllegalStateException("Audio is closed")
+            if (read < 0) break
+            position += read
+        }
+        bytes.flip()
+        return FloatArray(bytes.remaining() / 4) { bytes.float }
+    }
+
+    override fun close() {
+        channel?.close()
+        channel = null
+        file.delete()
+    }
+}
 
 /**
  * Extracts audio from a video file using Android's built-in MediaExtractor +
@@ -73,7 +106,7 @@ class AudioExtractor(private val context: Context) {
         durationSec: Double,
         trackIndex: Int = -1,
         onProgress: ((Float) -> Unit)? = null
-    ): Result<FloatArray> = withContext(Dispatchers.IO) {
+    ): Result<ExtractedAudio> = withContext(Dispatchers.IO) {
         if (sourceUrl.startsWith("sftp://") || sourceUrl.startsWith("webdav://") ||
             sourceUrl.startsWith("ftp://") || sourceUrl.startsWith("ftps://")) {
             return@withContext Result.failure(
@@ -81,6 +114,8 @@ class AudioExtractor(private val context: Context) {
             )
         }
 
+        var tempPcm: File? = null
+        var outputFile: File? = null
         try {
             Log.i(TAG, "Extracting audio from: $sourceUrl (track=$trackIndex)")
 
@@ -117,9 +152,6 @@ class AudioExtractor(private val context: Context) {
             val mime = inputFormat.getString(MediaFormat.KEY_MIME)!!
             Log.i(TAG, "Audio track $audioTrackIdx: ${srcSampleRate}Hz ${srcChannels}ch $mime")
 
-            val maxBytes = (MAX_DURATION_SEC * srcSampleRate * srcChannels * 4).toLong() // worst case 32-bit
-
-            var tempPcm: File? = null
             var codec: MediaCodec? = null
             var totalOutputBytes = 0L
             var actualSampleRate = srcSampleRate
@@ -128,7 +160,8 @@ class AudioExtractor(private val context: Context) {
             var isFloatPcm = false
 
             try {
-                tempPcm = File(context.cacheDir, "whisper_pcm_${System.currentTimeMillis()}.raw")
+                check(context.cacheDir.usableSpace >= MIN_FREE_SPACE_BYTES) { "Not enough disk space for audio extraction" }
+                tempPcm = File.createTempFile("whisper_pcm_", ".raw", context.cacheDir)
                 codec = MediaCodec.createDecoderByType(mime)
                 codec.configure(inputFormat, null, null, 0)
                 codec.start()
@@ -137,7 +170,7 @@ class AudioExtractor(private val context: Context) {
                 var sawInputEOS = false
                 var sawOutputEOS = false
 
-                FileOutputStream(tempPcm).use { out ->
+                FileOutputStream(tempPcm!!).use { out ->
                     while (!sawOutputEOS) {
                         if (!sawInputEOS) {
                             val inIdx = codec.dequeueInputBuffer(10_000)
@@ -172,8 +205,8 @@ class AudioExtractor(private val context: Context) {
                                     "${if (isFloatPcm) "float32" else "int16"} (${bytesPerSample}B/sample)")
                             }
                             outIdx >= 0 -> {
-                                val effectiveMax = (MAX_DURATION_SEC * actualSampleRate * actualChannels * bytesPerSample).toLong()
-                                if (totalOutputBytes < effectiveMax) {
+                                check(totalOutputBytes + info.size <= MAX_RAW_PCM_BYTES) { "Decoded audio exceeds disk safety limit" }
+                                if (info.size > 0) {
                                     val outBuf = codec.getOutputBuffer(outIdx)
                                     if (outBuf != null && info.size > 0) {
                                         outBuf.position(info.offset)
@@ -206,31 +239,17 @@ class AudioExtractor(private val context: Context) {
             // Kotlin smart-casts tempPcm to non-null here: if File creation had
             // failed above, the assignment would have thrown and we'd never
             // reach this line (the outer try/catch returns early).
-            val result = convertToWhisperFormat(tempPcm, actualSampleRate, actualChannels, bytesPerSample)
-            tempPcm.delete()
-
-            // CRITICAL: validate audio is not silent/garbage.
-            var maxAmp = 0f
-            var sumSq = 0.0
-            for (s in result) {
-                val abs = Math.abs(s)
-                if (abs > maxAmp) maxAmp = abs
-                sumSq += (s.toDouble() * s.toDouble())
-            }
-            val rms = Math.sqrt(sumSq / result.size)
-            Log.i(TAG, "Audio validation: ${result.size} samples, maxAmp=$maxAmp, rms=$rms")
-
-            if (maxAmp < 0.001f) {
-                Log.e(TAG, "Audio appears silent (maxAmp=$maxAmp) — extraction likely failed")
-                return@withContext Result.failure(
-                    RuntimeException("Extracted audio is silent (max amplitude $maxAmp). The codec may output an unsupported format.")
-                )
-            }
-
+            outputFile = File.createTempFile("whisper_", ".f32", context.cacheDir)
+            val totalSamples = convertToWhisperFormat(tempPcm!!, outputFile, actualSampleRate, actualChannels, bytesPerSample)
+            tempPcm!!.delete()
+            tempPcm = null
             onProgress?.invoke(1f)
-            Result.success(result)
+            Result.success(ExtractedAudio(outputFile, totalSamples, totalSamples / 16000.0))
         } catch (e: Exception) {
             Log.e(TAG, "Audio extraction failed", e)
+            tempPcm?.delete()
+            outputFile?.delete()
+            if (e is CancellationException) throw e
             Result.failure(e)
         }
     }
@@ -253,80 +272,61 @@ class AudioExtractor(private val context: Context) {
     }
 
     /**
-     * Convert raw PCM file to 16kHz mono FloatArray [-1.0, 1.0].
+     * Convert raw PCM file to 16kHz mono float32 little-endian, streaming.
      * Handles both 16-bit signed and 32-bit float input.
      */
     private fun convertToWhisperFormat(
         pcmFile: File,
+        outputFile: File,
         srcRate: Int,
         srcChannels: Int,
         bytesPerSample: Int
-    ): FloatArray {
+    ): Long {
         val bytesPerFrame = bytesPerSample * srcChannels
-        val srcFrameCount = (pcmFile.length() / bytesPerFrame).toInt()
+        val srcFrameCount = pcmFile.length() / bytesPerFrame
         val targetRate = 16000
-        val dstFrameCount = (srcFrameCount.toLong() * targetRate / srcRate).toInt()
-        val result = FloatArray(dstFrameCount)
-
-        val ratio = srcRate.toFloat() / targetRate.toFloat()
-        val needResample = srcRate != targetRate
-
-        BufferedInputStream(FileInputStream(pcmFile)).use { input ->
-            val chunkBuf = ByteArray(65536)
-            var chunkPos = 0
-            var chunkLen = 0
-
-            for (srcFrame in 0 until srcFrameCount) {
-                // Ensure enough bytes for this frame.
-                while (chunkPos + bytesPerFrame > chunkLen && chunkLen >= 0) {
-                    val remaining = chunkLen - chunkPos
-                    if (remaining > 0) System.arraycopy(chunkBuf, chunkPos, chunkBuf, 0, remaining)
-                    chunkPos = 0
-                    val read = input.read(chunkBuf, remaining, chunkBuf.size - remaining)
-                    chunkLen = if (read <= 0) -1 else remaining + read
-                    if (chunkLen < 0) break
-                }
-                if (chunkLen < 0 || chunkPos + bytesPerFrame > chunkLen) break // EOF
-
-                // Read one sample per channel, downmix to mono.
+        val dstFrameCount = (srcFrameCount * targetRate + srcRate - 1) / srcRate
+        check(dstFrameCount * 4 <= MAX_TARGET_PCM_BYTES) { "Whisper audio exceeds disk safety limit" }
+        RandomAccessFile(pcmFile, "r").use { input ->
+            BufferedOutputStream(FileOutputStream(outputFile)).use { output ->
+                val frame = ByteArray(bytesPerFrame)
+                var nextDst = 0L
+                for (srcFrame in 0 until srcFrameCount) {
+                    input.readFully(frame)
                 var monoFloat = if (bytesPerSample == 4) {
                     // 32-bit float: read 4 bytes per channel.
                     if (srcChannels == 1) {
-                        readFloatLE(chunkBuf, chunkPos)
+                            readFloatLE(frame, 0)
                     } else {
                         var sum = 0f
                         for (ch in 0 until srcChannels) {
-                            sum += readFloatLE(chunkBuf, chunkPos + ch * 4)
+                            sum += readFloatLE(frame, ch * 4)
                         }
                         sum / srcChannels
                     }
                 } else {
                     // 16-bit signed: read 2 bytes per channel.
                     if (srcChannels == 1) {
-                        readInt16LE(chunkBuf, chunkPos).toFloat() / 32768.0f
+                            readInt16LE(frame, 0).toFloat() / 32768.0f
                     } else {
                         var sum = 0
                         for (ch in 0 until srcChannels) {
-                            sum += readInt16LE(chunkBuf, chunkPos + ch * 2)
+                            sum += readInt16LE(frame, ch * 2)
                         }
                         (sum / srcChannels).toFloat() / 32768.0f
                     }
                 }
-                chunkPos += bytesPerFrame
-
-                // Write to result (with or without resampling).
-                if (!needResample) {
-                    if (srcFrame < result.size) result[srcFrame] = monoFloat
-                } else {
-                    val dstStart = (srcFrame / ratio).toInt()
-                    val dstEnd = ((srcFrame + 1) / ratio).toInt()
-                    for (d in dstStart until minOf(dstEnd + 1, result.size)) {
-                        result[d] = monoFloat
+                    val dstUntil = minOf(dstFrameCount, ((srcFrame + 1) * targetRate) / srcRate)
+                    while (nextDst < dstUntil) {
+                        val bits = java.lang.Float.floatToIntBits(monoFloat)
+                        output.write(bits and 0xff); output.write((bits ushr 8) and 0xff)
+                        output.write((bits ushr 16) and 0xff); output.write((bits ushr 24) and 0xff)
+                        nextDst++
                     }
                 }
             }
         }
-        return result
+        return dstFrameCount
     }
 
     private fun readInt16LE(buf: ByteArray, offset: Int): Int {
@@ -341,7 +341,9 @@ class AudioExtractor(private val context: Context) {
 
     companion object {
         private const val TAG = "AudioExtractor"
-        private const val MAX_DURATION_SEC = 1800
+        private const val MAX_RAW_PCM_BYTES = 4L * 1024 * 1024 * 1024
+        private const val MAX_TARGET_PCM_BYTES = 2L * 1024 * 1024 * 1024
+        private const val MIN_FREE_SPACE_BYTES = 256L * 1024 * 1024
 
         /** ISO 639-2 → display name for common languages. */
         val LANGUAGE_NAMES = mapOf(

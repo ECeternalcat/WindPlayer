@@ -53,6 +53,9 @@ object MPVLib {
     @JvmStatic fun eventProperty(property: String, value: String) { for (o in observers) o.eventProperty(property, value) }
     @JvmStatic fun eventProperty(property: String) { for (o in observers) o.eventProperty(property) }
     @JvmStatic fun event(eventId: Int) { for (o in observers) o.event(eventId) }
+    @JvmStatic fun endFile(reason: Int, error: Int, playlistEntryId: Long) {
+        for (o in observers) o.endFile(reason, error, playlistEntryId)
+    }
 
     private val log_observers = CopyOnWriteArrayList<LogObserver>()
     @JvmStatic fun addLogObserver(o: LogObserver) { log_observers.addIfAbsent(o) }
@@ -68,6 +71,7 @@ object MPVLib {
         fun eventProperty(property: String, value: String)
         fun eventProperty(property: String, value: Double)
         fun event(eventId: Int)
+        fun endFile(reason: Int, error: Int, playlistEntryId: Long)
     }
 
     interface LogObserver {

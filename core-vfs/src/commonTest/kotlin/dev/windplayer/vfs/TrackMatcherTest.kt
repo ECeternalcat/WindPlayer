@@ -192,6 +192,24 @@ class TrackMatcherTest {
     }
 
     @Test
+    fun `S01E01 keeps season and episode when numbers are equal`() {
+        val matched = matchExternalTracks(video("Show.S01E01.mkv"), listOf(sub("Show.EP001.srt")))
+        assertEquals(0, matched.size)
+    }
+
+    @Test
+    fun `structured episode requires matching title`() {
+        val matched = matchExternalTracks(video("Show.S01E01.mkv"), listOf(sub("Other.S01E01.srt")))
+        assertEquals(0, matched.size)
+    }
+
+    @Test
+    fun `cleaned prefix does not match a longer unrelated title`() {
+        val matched = matchExternalTracks(video("Movie.mkv"), listOf(sub("MovieTrailer.srt")))
+        assertEquals(0, matched.size)
+    }
+
+    @Test
     fun `extractEpisodeFeature blocks fuzzy after structured match found nothing`() {
         // Per design §2: if the video has an episode feature, Level 4 (fuzzy)
         // is BLOCKED — even if no Level 3 subtitle exists. This prevents

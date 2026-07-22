@@ -1,6 +1,6 @@
 package dev.windplayer.mpv
 
-import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.Flow
 
 expect class MpvPlayer() {
     fun create()
@@ -12,8 +12,8 @@ expect class MpvPlayer() {
     fun setProperty(key: String, value: String)
     fun setProperty(key: String, value: Long)
     fun getPropertyString(name: String): String?
-    fun getPropertyLong(name: String): Long
-    fun getPropertyDouble(name: String): Double
+    fun getPropertyLong(name: String): Long?
+    fun getPropertyDouble(name: String): Double?
     fun observeProperty(name: String, format: MpvFormat)
     /**
      * Remove all property observers registered via [observeProperty].
@@ -21,7 +21,7 @@ expect class MpvPlayer() {
      * across repeated Browser→Player transitions (H8).
      */
     fun clearPropertyObservers()
-    val events: SharedFlow<MpvEvent>
+    val events: Flow<MpvEvent>
 }
 
 enum class MpvFormat {
@@ -31,7 +31,11 @@ enum class MpvFormat {
 sealed class MpvEvent {
     data class Idle(val dummy: Unit = Unit) : MpvEvent()
     data class FileLoaded(val dummy: Unit = Unit) : MpvEvent()
-    data class EndFile(val reason: Int) : MpvEvent()
+    data class EndFile(
+        val reason: Int,
+        val error: Int = 0,
+        val playlistEntryId: Long = 0
+    ) : MpvEvent()
     data class Error(val message: String) : MpvEvent()
     data class PropertyChange(val name: String, val value: Any?) : MpvEvent()
 }

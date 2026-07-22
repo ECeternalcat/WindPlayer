@@ -27,7 +27,7 @@ enum class TrackType(val label: String, val mpvProp: String) {
 
 fun MpvPlayer.queryTracks(): List<TrackInfo> {
     val count = try {
-        getPropertyLong("track-list/count").toInt()
+        getPropertyLong("track-list/count")?.toInt() ?: 0
     } catch (_: Exception) {
         0
     }
@@ -67,6 +67,7 @@ fun TrackSelectionSheet(
     serverId: String? = null,
     dirPath: String? = null,
     isLocal: Boolean = false,
+    onPlaybackResourceCreated: (PlaybackParams) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var tracks by remember { mutableStateOf(player.queryTracks()) }
@@ -278,7 +279,10 @@ fun TrackSelectionSheet(
                                         } else {
                                             val sid = serverId ?: return@launch
                                             val mgr = vfsManager ?: return@launch
-                                            mgr.preparePlayback(sid, file).getOrNull()?.streamUrl ?: file.path
+                                            val prepared = mgr.preparePlayback(sid, file).getOrNull()
+                                                ?: return@launch
+                                            onPlaybackResourceCreated(prepared)
+                                            prepared.streamUrl
                                         }
                                         player.command(cmd, url)
                                         browseMode = false

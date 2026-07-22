@@ -32,7 +32,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Ensure gradlew is executable
         # On Windows checkouts the execute bit can be lost; restore it so
@@ -40,13 +40,13 @@ jobs:
         run: chmod +x gradlew
 
       - name: Setup JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
         with:
           distribution: temurin
           java-version: '21'
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
         with:
           # Accept all SDK licenses up-front (otherwise AGP's auto-download of
           # missing components fails the build with "license not accepted").
@@ -59,14 +59,14 @@ jobs:
           set -x
           yes | sdkmanager --licenses > /dev/null 2>&1
           sdkmanager "platform-tools" "platforms;android-36"
-          sdkmanager "build-tools;36.0.0" || sdkmanager "build-tools;36.0.1"
+          sdkmanager "build-tools;37.0.0"
 
       - name: Create local.properties
         # AGP needs sdk.dir even with ANDROID_HOME set, on some configurations.
         run: echo "sdk.dir=$ANDROID_HOME" > local.properties
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+        uses: gradle/actions/setup-gradle@d9c87d481d55275bb5441eef3fe0e46805f9ef70 # v3.5.0
         with:
           # Only write cache entries from the default branch so PR runs don't
           # bloat the cache with one-off dependencies.
@@ -82,7 +82,7 @@ jobs:
         run: ./gradlew :app-android:assembleDebug --no-daemon --stacktrace
 
       - name: Upload Android APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: app-android-debug-${{ github.sha }}
@@ -92,7 +92,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: test-results-${{ github.sha }}
           path: |

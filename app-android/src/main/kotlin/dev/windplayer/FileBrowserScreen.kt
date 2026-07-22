@@ -42,7 +42,7 @@ import kotlinx.coroutines.withContext
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FileBrowserScreen(
-    onFilePlay: (FileNode, List<FileNode>) -> Unit,
+    onFilePlay: (FileNode, List<FileNode>, String?) -> Unit,
     onOpenSettings: () -> Unit,
     onAddServer: () -> Unit,
     onServerClick: (ServerConfig) -> Unit,
@@ -322,10 +322,10 @@ fun FileBrowserScreen(
                                     sub?.let { dirStack = dirStack + it }
                                 }
                             } else if (file.isVideo()) {
-                                onFilePlay(file, files)
+                                onFilePlay(file, files, rootTreeUri?.toString())
                             }
                         },
-                        onPlay = { onFilePlay(file, files) },
+                        onPlay = { onFilePlay(file, files, rootTreeUri?.toString()) },
                         onLongClick = { contextMenuFile = file }
                     )
                 }
