@@ -2858,7 +2858,7 @@ build information.
 
 ---
 
-## Phase 72: EndFile Bridge and Chunked Whisper (In Progress)
+## Phase 72: EndFile Bridge and Chunked Whisper (Device Verification Pending)
 
 ### EndFile bridge
 
@@ -2868,8 +2868,12 @@ build information.
   `playlist_entry_id` through a dedicated `MPVLib.endFile()` callback.
 - Kotlin and Desktop JNA now carry the complete event data.
 - The patch passes `git apply --check --unidiff-zero` against the fixed upstream
-  commit. Rebuilding `libplayer.so` on Linux/macOS remains required before the
-  Android runtime receives the new callback.
+  commit.
+- The manual GitHub Actions workflow at WindPlayer commit
+  `13e093439b2b0cc785d72dcab769f32d1327ad87` built the arm64 bridge with the
+  fixed mpv-android/mpv/FFmpeg/NDK provenance. The checked-in `libplayer.so` was
+  replaced with SHA-256
+  `ec2178cdb3b5da5da2f2375c97851d6e567a32ca640625a2301667b5fbf7f78a`.
 
 ### Chunked Whisper
 
@@ -2886,12 +2890,17 @@ BUILD SUCCESSFUL
 :app-desktop:compileKotlinDesktop
 :app-android:compileDebugKotlin
 :app-android:testDebugUnitTest       6 tests
+:app-android:assembleDebug
 :core-vfs:allTests                  95 tests
 ```
 
+- All 10 recorded arm64 native asset hashes match the checked-in files.
+- The debug APK contains the patched bridge with the same `ec2178...f78a`
+  SHA-256.
+
 ## Phase 72 Status Summary
 
-**In Progress**: Chunked Whisper is implemented and verified. The EndFile
-protocol and patch are implemented and validated, but the Android runtime still
-uses the old prebuilt `libplayer.so`; native rebuild and device validation are
-the remaining steps.
+**Device verification pending**: Chunked Whisper is implemented and verified.
+The EndFile protocol, native build and arm64 bridge replacement are complete.
+Android device tests for EOF, STOP, ERROR, QUIT and REDIRECT are the remaining
+runtime validation step.

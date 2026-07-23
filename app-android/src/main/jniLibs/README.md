@@ -2,8 +2,9 @@
 
 ## 当前版本来源
 
-当前 `arm64-v8a` 目录中的 10 个 `.so` 从 mpv-android 官方 Release APK
-原样提取，逐文件 SHA-256 已与 APK 内容核对一致：
+当前 `arm64-v8a` 目录中的 9 个依赖 `.so` 从 mpv-android 官方 Release APK
+原样提取，逐文件 SHA-256 已与 APK 内容核对一致。`libplayer.so` 是基于
+同一固定源码和 NDK 重建的 EndFile JNI bridge，链接到这些已验证的官方库：
 
 - Release：`2026-04-25`
 - Release 页面：<https://github.com/mpv-android/mpv-android/releases/tag/2026-04-25>
@@ -13,6 +14,13 @@
 - libmpv commit：`9ce79bcaa0132660a2e45b6bfc1fb0c199665277`
 - FFmpeg commit：`fc4960b155aa33b9a08cf26c5e0a0530f0545f24`
 - Android NDK：r29
+
+`libplayer.so` bridge provenance：
+
+- WindPlayer workflow commit：`13e093439b2b0cc785d72dcab769f32d1327ad87`
+- artifact SHA-256：`d22531b2d3dc91a277d631e181778c9ba0aa9b60fbc8b6d5d5ec57fd5823318f`
+- bridge SHA-256：`ec2178cdb3b5da5da2f2375c97851d6e567a32ca640625a2301667b5fbf7f78a`
+- EndFile patch SHA-256：`95d5df76934cd6cd07f49ea3e78621af4c2a8d077316a2aa4717fbf893813206`
 
 完整依赖版本由该 Release 页面列出。本仓库的逐文件哈希记录在
 `Documents/Native-Assets-SHA256.txt`。
@@ -37,7 +45,9 @@ mpv-android 官方明确说明它不发布可导入的 AAR/library。官方 Rele
    ```
 
 4. 将该 ABI 目录中的全部 `.so` 一并复制，不能只复制 `libmpv.so`；当前
-   mpv-android 构建还依赖 FFmpeg、`libplayer.so` 和 `libc++_shared.so`。
+   mpv-android 构建还依赖 FFmpeg、`libplayer.so` 和 `libc++_shared.so`。若更新
+   上游 APK，需要重新构建并验证本项目的 patched `libplayer.so`，不能用 APK
+   中的未补丁 bridge 覆盖它。
 
 ## 方法 2：从源码交叉编译
 
